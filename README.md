@@ -1,16 +1,47 @@
 # Remote Support Bootstrap
 
-Plan B para soporte de equipos Windows cuando RustDesk o AnyDesk no funcionen en la red del cliente.
-
-El diseño evita publicar VNC. TightVNC queda detrás de SSH y se alcanza desde Linux mediante un reenvío local:
+Plan B para soporte de equipos Windows cuando RustDesk o AnyDesk no funcionan.
+VNC no se publica: TightVNC queda detrás de SSH.
 
 ```text
 Linux ── ZeroTier o Cloudflare Tunnel ── SSH ── 127.0.0.1:5900 (TightVNC)
 ```
 
+## Instalación rápida y sin descargas repetidas
+
+El instalador detecta OpenSSH, ZeroTier, cloudflared y TightVNC ya instalados,
+por lo que no los reinstala. Las MSI verificadas quedan en una caché persistente:
+
+```text
+C:\ProgramData\RemoteSupportBootstrap\installers
+```
+
+En una nueva ejecución se usa esa caché. Primero intenta obtener cada asset del
+último Release de este repositorio y, si aún no está publicado, usa el proveedor
+oficial. Siempre exige una firma Authenticode válida antes de instalar.
+
+Para preparar otro equipo sin Internet, copia la caché a una USB y ejecuta:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -InstallerSource 'E:\installers'
+```
+
+Usa `-RefreshInstallers` solo si quieres reemplazar deliberadamente la caché.
+
+### Assets en GitHub Releases
+
+No subas binarios a Git: harían pesados los clones y el historial. Para este
+proyecto sí es apropiado adjuntarlos a un Release publicado. Sube las MSI desde
+sus proveedores oficiales, revisa que tengan firma digital válida en Windows y
+usa exactamente estos nombres (el instalador usa `releases/latest/download`):
+
+- `ZeroTier-One.msi`
+- `cloudflared-windows-amd64.msi`
+- `tightvnc-4.0.2-x64.msi`
+
 ## Uso en Windows
 
-Abre **PowerShell como administrador** y ejecuta primero la forma revisable:
+Abre PowerShell como administrador y descarga una copia revisable:
 
 ```powershell
 $repo = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main'
@@ -19,36 +50,28 @@ notepad "$env:TEMP\Install-RemoteSupport.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:TEMP\Install-RemoteSupport.ps1"
 ```
 
-El atajo de una sola línea también funciona, pero ejecútalo solo si confías en la versión pública del repositorio:
-
-```powershell
-irm https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1 | iex
-```
-
-El Network ID predeterminado es `c1644bfd5484e1f8`. Al terminar, el propietario debe autorizar el nuevo equipo en ZeroTier Central.
-
-Durante la instalación de TightVNC, configura una contraseña fuerte. El instalador se abre de forma interactiva deliberadamente: una contraseña no debe viajar en el comando, historial de PowerShell ni repositorio.
+El Network ID predeterminado es `c1644bfd5484e1f8`. Autoriza el equipo nuevo en
+ZeroTier Central. Durante el instalador interactivo de TightVNC, configura una
+contraseña fuerte; nunca viaja ni queda escrita en este repositorio.
 
 ## Conexión primaria desde Linux
 
-Busca la IP administrada del equipo en ZeroTier Central y reemplaza los valores:
+Busca la IP administrada del equipo en ZeroTier Central:
 
 ```bash
 ssh -N -L 5901:127.0.0.1:5900 USUARIO_WINDOWS@IP_ZEROTIER
 vncviewer localhost:5901
 ```
 
-La primera orden queda abierta mientras dure la sesión VNC.
-
 ## Respaldo Cloudflare
 
-En Windows, cuando se necesite soporte puntual:
+En Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File 'C:\ProgramData\RemoteSupportBootstrap\Start-CloudflareSupport.ps1'
 ```
 
-Comparte el host `*.trycloudflare.com` que muestre. En Linux:
+Comparte el host `*.trycloudflare.com`. En Linux:
 
 ```bash
 ssh -N -L 5901:127.0.0.1:5900 \
@@ -57,11 +80,23 @@ ssh -N -L 5901:127.0.0.1:5900 \
 vncviewer localhost:5901
 ```
 
-El túnel Cloudflare es temporal: muere al cerrar esa ventana y su dominio cambia cada vez.
+## Deshacer únicamente los cambios del bootstrap
+
+El instalador guarda qué componentes ya existían y cuáles instaló él. Para
+retirar solo sus cambios, abre PowerShell como administrador y ejecuta:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File 'C:\ProgramData\RemoteSupportBootstrap\Uninstall-RemoteSupport.ps1'
+```
+
+Pedirá confirmación. Elimina únicamente su regla de firewall, abandona ZeroTier
+solo si el bootstrap unió la red, y desinstala solo componentes que este
+bootstrap haya instalado. Si falta el registro de estado, se detiene sin tocar
+software ajeno.
 
 ## Notas de seguridad
 
-- El instalador deja SSH entrante solo por el adaptador ZeroTier; no abre SSH en la LAN o Internet.
-- No crea una regla de firewall para VNC. VNC debe usarse solo a través del túnel SSH local.
-- No incluye contraseñas, claves SSH ni tokens en el repositorio.
-- El fallback de Cloudflare no ayuda si la red también bloquea las salidas que necesita `cloudflared`.
+- SSH entrante queda permitido solo por el adaptador ZeroTier.
+- No se crea una regla para VNC ni se abren TCP/5900 en LAN o Internet.
+- No incluye contraseñas, claves SSH ni tokens.
+- Cloudflare es temporal: el túnel muere al cerrar esa ventana y su dominio cambia.
