@@ -214,6 +214,36 @@ function Install-RemotePackage([string] $Id) {
     }
 }
 
+function Get-ZeroTierCommand {
+    $candidates = @(
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x64.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x86.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat')
+    )
+    $command = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $command) {
+        throw 'ZeroTier se instalo, pero no se encontro su comando. Reinicia el equipo y vuelve a ejecutar este script.'
+    }
+    return $command
+}
+
+function Invoke-ZeroTier([string] $Command, [string[]] $Arguments) {
+    if ((Split-Path -Leaf $Command) -match '^zerotier-one_') {
+        & $Command -q @Arguments
+    } else {
+        & $Command @Arguments
+    }
+}
+
+function Wait-ZeroTierService {
+    for ($attempt = 1; $attempt -le 15; $attempt++) {
+        $service = Get-Service -Name ZeroTierOneService -ErrorAction SilentlyContinue
+        if ($service -and $service.Status -eq 'Running') { return }
+        Start-Sleep -Seconds 1
+    }
+    throw 'El servicio de ZeroTier no esta en ejecucion. Revisa services.msc y vuelve a intentarlo.'
+}
+
 function Get-VncPasswordHash([string] $Password) {
     # VNC cifra la contrasena con DES/ECB y una clave fija cuyos bits estan
     # invertidos respecto a la representacion estandar de DES.
