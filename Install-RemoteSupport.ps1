@@ -430,7 +430,7 @@ if ($Flow -eq 'ZeroTier') {
         Write-Host '1. Autoriza este nodo en ZeroTier Central (usa el Node ID de arriba).' -ForegroundColor Yellow
         Write-Host '2. Cuando este autorizado aparecera la IP administrada; conecta el visor VNC a esa IP, puerto 5900.' -ForegroundColor Yellow
     }
-} else {
+} elseif ($Flow -eq 'Cloudflare') {
     Write-Step 'Habilitando OpenSSH Server'
     Enable-OpenSshServer
 
