@@ -135,8 +135,60 @@ function Install-FromRelease([string] $Id) {
     }
 }
 
+function Find-TightVncServer {
+    # 1. Rutas comunes en disco
+    $candidates = @()
+    if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles 'TightVNC\tvnserver.exe' }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($programFilesX86) { $candidates += Join-Path $programFilesX86 'TightVNC\tvnserver.exe' }
+    $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+    $candidates += Join-Path $systemDrive 'Program Files\TightVNC\tvnserver.exe'
+    $candidates += Join-Path $systemDrive 'Program Files (x86)\TightVNC\tvnserver.exe'
+
+    $server = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($server) { return $server }
+
+    # 2. Consultar el servicio tvnserver si ya esta registrado
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='tvnserver'" -ErrorAction SilentlyContinue
+    if ($service -and $service.PathName) {
+        $cleanPath = $service.PathName.Trim('"').Split('"')[0].Trim()
+        if ($cleanPath -match '([a-zA-Z]:\\[^"]+tvnserver\.exe)') { $cleanPath = $Matches[1] }
+        if (Test-Path -LiteralPath $cleanPath) { return $cleanPath }
+    }
+
+    # 3. Consultar Uninstall en Registro (64-bit y 32-bit)
+    $uninstallKeys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($uk in $uninstallKeys) {
+        $props = Get-ItemProperty -Path $uk -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'TightVNC' -and $_.InstallLocation }
+        foreach ($p in $props) {
+            $candidate = Join-Path $p.InstallLocation 'tvnserver.exe'
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+    }
+
+    # 4. Busqueda por comando o Get-ChildItem en carpetas de programas
+    $cmd = Get-Command tvnserver.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    return $null
+}
+
 function Install-RemotePackage([string] $Id) {
-    if (Test-WingetPackage $Id) {
+    if ($Id -eq 'GlavSoft.TightVNC') {
+        $existingServer = Find-TightVncServer
+        if ($existingServer) {
+            Write-Host "TightVNC ya esta instalado y verificado en: $existingServer" -ForegroundColor DarkGray
+            return
+        }
+        # Si winget decia que estaba instalado pero el exe no existe (instalacion corrupta o solo Viewer),
+        # forzamos instalacion limpia del paquete completo
+        if (Test-WingetPackage $Id) {
+            Write-Warning "winget reporta $Id pero no se encontro tvnserver.exe. Se reinstalara el paquete completo..."
+        }
+    } elseif (Test-WingetPackage $Id) {
         Write-Host "$Id ya esta instalado." -ForegroundColor DarkGray
         return
     }
@@ -146,8 +198,10 @@ function Install-RemotePackage([string] $Id) {
         Write-Host "Instalando $Id $($package.Version) con winget..." -ForegroundColor DarkGray
         & winget.exe install --id $Id --exact --version $package.Version --scope machine `
             --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-        if ($LASTEXITCODE -eq 0 -and (Test-WingetPackage $Id)) { return }
-        Write-Warning "winget no pudo instalar $Id; se usara el Release de respaldo."
+        if ($LASTEXITCODE -eq 0) {
+            if ($Id -ne 'GlavSoft.TightVNC' -or (Find-TightVncServer)) { return }
+        }
+        Write-Warning "winget no pudo completar la instalacion de $Id; se usara el Release de respaldo."
     } elseif ($ForceRelease) {
         Write-Host "-ForceRelease activo: se omite winget para $Id." -ForegroundColor DarkGray
     } else {
@@ -155,50 +209,9 @@ function Install-RemotePackage([string] $Id) {
     }
 
     Install-FromRelease $Id
-    if (-not (Test-WingetPackage $Id)) {
-        Write-Warning "$Id se instalo desde el Release, pero winget no lo detecta todavia. Continua si la aplicacion aparece en el sistema."
+    if ($Id -eq 'GlavSoft.TightVNC' -and -not (Find-TightVncServer)) {
+        throw 'TightVNC se instalo desde el Release pero tvnserver.exe sigue sin aparecer. Revisa C:\Program Files\TightVNC.'
     }
-}
-
-function Get-ZeroTierCommand {
-    $candidates = @(
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x64.exe'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x86.exe'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat')
-    )
-    $command = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not $command) {
-        throw 'ZeroTier se instalo, pero no se encontro su comando. Reinicia el equipo y vuelve a ejecutar este script.'
-    }
-    return $command
-}
-
-function Invoke-ZeroTier([string] $Command, [string[]] $Arguments) {
-    if ((Split-Path -Leaf $Command) -match '^zerotier-one_') {
-        & $Command -q @Arguments
-    } else {
-        & $Command @Arguments
-    }
-}
-
-function Wait-ZeroTierService {
-    for ($attempt = 1; $attempt -le 15; $attempt++) {
-        $service = Get-Service -Name ZeroTierOneService -ErrorAction SilentlyContinue
-        if ($service -and $service.Status -eq 'Running') { return }
-        Start-Sleep -Seconds 1
-    }
-    throw 'El servicio de ZeroTier no esta en ejecucion. Revisa services.msc y vuelve a intentarlo.'
-}
-
-function Find-TightVncServer {
-    $candidates = @()
-    if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles 'TightVNC\tvnserver.exe' }
-    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
-    if ($programFilesX86) { $candidates += Join-Path $programFilesX86 'TightVNC\tvnserver.exe' }
-
-    $server = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if (-not $server) { throw 'No se encontro tvnserver.exe. TightVNC no quedo instalado correctamente.' }
-    return $server
 }
 
 function Get-VncPasswordHash([string] $Password) {
