@@ -58,8 +58,11 @@ if ($null -ne $state.DefaultOpenSshRuleWasEnabled) {
 }
 
 if ($state.ZeroTierJoinedByBootstrap) {
-    $cli = @("$CommonAppData\ZeroTier\One\zerotier-cli.bat", "$CommonAppData\ZeroTier\One\zerotier-cli.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($cli -and $PSCmdlet.ShouldProcess("red ZeroTier $($state.NetworkId)", 'abandonar')) { & $cli leave $state.NetworkId }
+    $cli = @("$CommonAppData\ZeroTier\One\zerotier-cli.bat", "$CommonAppData\ZeroTier\One\zerotier-cli.exe", "$CommonAppData\ZeroTier\One\zerotier-one_x64.exe", "$CommonAppData\ZeroTier\One\zerotier-one_x86.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($cli -and $PSCmdlet.ShouldProcess("red ZeroTier $($state.NetworkId)", 'abandonar')) {
+        if ((Split-Path -Leaf $cli) -match '^zerotier-one_') { & $cli -q leave $state.NetworkId }
+        else { & $cli leave $state.NetworkId }
+    }
 }
 if ($state.TightVncInstalledByBootstrap) { Uninstall-RecordedApp 'TightVNC' 'TightVNC' }
 if ($state.CloudflaredInstalledByBootstrap) { Uninstall-RecordedApp 'cloudflared' 'cloudflared' }

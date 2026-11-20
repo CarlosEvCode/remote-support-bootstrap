@@ -101,11 +101,20 @@ function Install-Msi([string] $Path, [switch] $Interactive) {
 function Get-ZeroTierCli {
     $candidates = @(
         (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.exe')
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x64.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x86.exe')
     )
     $result = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $result) { throw 'No se encontro zerotier-cli despues de instalar ZeroTier.' }
     $result
+}
+
+function Invoke-ZeroTierCli([string] $Cli, [string[]] $Arguments) {
+    # Las MSI recientes incluyen zerotier-one_x64.exe, no zerotier-cli.bat.
+    # -q activa su personalidad compatible con zerotier-cli.
+    if ((Split-Path -Leaf $Cli) -match '^zerotier-one_') { & $Cli -q @Arguments }
+    else { & $Cli @Arguments }
 }
 
 function Get-CloudflaredExe {
@@ -118,9 +127,18 @@ function Get-CloudflaredExe {
 function Test-TightVncInstalled { [bool](Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue) }
 
 function Test-ZeroTierNetwork([string] $Cli, [string] $Id) {
-    $networks = & $Cli listnetworks 2>&1
+    $networks = Invoke-ZeroTierCli -Cli $Cli -Arguments @('listnetworks') 2>&1
     if ($LASTEXITCODE -ne 0) { throw "No se pudo consultar las redes de ZeroTier: $networks" }
     [bool]($networks | Select-String -SimpleMatch $Id -Quiet)
+}
+
+function Get-ZeroTierAdapter {
+    foreach ($attempt in 1..15) {
+        $adapter = Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'ZeroTier' -or $_.Name -match 'ZeroTier' } | Select-Object -First 1
+        if ($adapter) { return $adapter }
+        Start-Sleep -Seconds 2
+    }
+    throw 'El adaptador ZeroTier no aparecio tras 30 segundos. Reinicia el servicio ZeroTierOneService y vuelve a ejecutar el instalador.'
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $InstallerCache | Out-Null
@@ -158,14 +176,13 @@ if ($zeroTierService.Status -ne 'Running') { Start-Service 'ZeroTierOneService' 
 if (Test-ZeroTierNetwork $zeroTierCli $NetworkId) {
     Write-Host "Este equipo ya pertenece a la red $NetworkId." -ForegroundColor DarkGray
 } else {
-    & $zeroTierCli join $NetworkId
+    Invoke-ZeroTierCli -Cli $zeroTierCli -Arguments @('join', $NetworkId)
     if ($LASTEXITCODE -ne 0) { throw "ZeroTier no pudo unirse a la red $NetworkId." }
     $state.ZeroTierJoinedByBootstrap = $true; Save-State
 }
 
 Write-Step 'Restringiendo SSH a la interfaz ZeroTier'
-$zeroTierAdapter = Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'ZeroTier' -or $_.Name -match 'ZeroTier' } | Select-Object -First 1
-if (-not $zeroTierAdapter) { throw 'No se encontro el adaptador ZeroTier.' }
+$zeroTierAdapter = Get-ZeroTierAdapter
 if (-not ($state.PSObject.Properties.Name -contains 'DefaultOpenSshRuleWasEnabled')) {
     $defaultRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
     $state | Add-Member -NotePropertyName DefaultOpenSshRuleWasEnabled -NotePropertyValue [bool]($defaultRule.Enabled -contains 'True')
@@ -217,6 +234,6 @@ Write-Host "   powershell -ExecutionPolicy Bypass -File `"$uninstallTarget`""
 Write-Host "`nCache de instaladores: $InstallerCache" -ForegroundColor Cyan
 Write-Host 'Puedes copiar esa carpeta a una USB y reutilizarla con -InstallerSource X:\carpeta.' -ForegroundColor Cyan
 Write-Host "`nEstado de ZeroTier:" -ForegroundColor Cyan
-& $zeroTierCli listnetworks
+Invoke-ZeroTierCli -Cli $zeroTierCli -Arguments @('listnetworks')
 Write-Host "`nEstado de SSH:" -ForegroundColor Cyan
 Get-Service sshd | Format-Table -AutoSize
