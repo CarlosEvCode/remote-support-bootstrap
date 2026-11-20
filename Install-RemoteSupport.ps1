@@ -241,10 +241,23 @@ if ($Flow -eq 'ZeroTier') {
     Write-Host $info.Trim()
     Write-Host $networks.Trim()
 
+    $nodeId = $null
+    if ($info -match '200 info ([0-9a-fA-F]{10})') { $nodeId = $Matches[1] }
+
+    $managedIp = $null
+    $networkLine = $networks -split "`r?`n" | Where-Object { $_ -match [regex]::Escape($NetworkId) } | Select-Object -First 1
+    if ($networkLine -and $networkLine -match '([0-9]{1,3}(?:\.[0-9]{1,3}){3})/\d+') { $managedIp = $Matches[1] }
+
     Write-Host "`nLISTO (ZeroTier + TightVNC)." -ForegroundColor Green
-    Write-Host '1. Autoriza este nodo en ZeroTier Central (usa el Node ID que aparece arriba).' -ForegroundColor Yellow
-    Write-Host '2. Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
-    Write-Host '3. Desde el otro equipo, conecta el visor VNC a: IP_ZEROTIER:5900' -ForegroundColor Yellow
+    if ($nodeId) { Write-Host "Node ID: $nodeId" -ForegroundColor Cyan }
+    if ($managedIp) {
+        Write-Host "IP ZeroTier: $managedIp" -ForegroundColor Cyan
+        Write-Host "Conecta el visor VNC a: ${managedIp}:5900" -ForegroundColor Yellow
+    } else {
+        Write-Host '1. Autoriza este nodo en ZeroTier Central (usa el Node ID de arriba).' -ForegroundColor Yellow
+        Write-Host '2. Cuando este autorizado aparecera la IP administrada; conecta el visor VNC a esa IP, puerto 5900.' -ForegroundColor Yellow
+    }
+    Write-Host 'Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
 } else {
     Write-Step 'Habilitando OpenSSH Server'
     Enable-OpenSshServer
