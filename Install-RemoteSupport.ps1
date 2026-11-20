@@ -141,6 +141,17 @@ function Get-ZeroTierAdapter {
     throw 'El adaptador ZeroTier no aparecio tras 30 segundos. Reinicia el servicio ZeroTierOneService y vuelve a ejecutar el instalador.'
 }
 
+function Get-ZeroTierManagedIPv4([object] $Adapter) {
+    foreach ($attempt in 1..30) {
+        $address = Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '127.0.0.1' } |
+            Select-Object -First 1
+        if ($address) { return $address.IPAddress }
+        Start-Sleep -Seconds 2
+    }
+    throw 'ZeroTier aun no tiene una IPv4 administrada. Autoriza este nodo en ZeroTier Central, espera unos segundos y vuelve a ejecutar el instalador.'
+}
+
 New-Item -ItemType Directory -Force -Path $InstallRoot, $InstallerCache | Out-Null
 $state = [ordered]@{ Version = 1; NetworkId = $NetworkId; OpenSshInstalledByBootstrap = $false; ZeroTierInstalledByBootstrap = $false; ZeroTierJoinedByBootstrap = $false; CloudflaredInstalledByBootstrap = $false; TightVncInstalledByBootstrap = $false }
 if (Test-Path $StatePath) {
@@ -189,8 +200,9 @@ if (Test-ZeroTierNetwork $zeroTierCli $NetworkId) {
     $state.ZeroTierJoinedByBootstrap = $true; Save-State
 }
 
-Write-Step 'Restringiendo SSH a la interfaz ZeroTier'
+Write-Step 'Restringiendo SSH a la IP administrada de ZeroTier'
 $zeroTierAdapter = Get-ZeroTierAdapter
+$zeroTierIp = Get-ZeroTierManagedIPv4 $zeroTierAdapter
 if (-not $state.Contains('DefaultOpenSshRuleWasEnabled')) {
     $defaultRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
     $state['DefaultOpenSshRuleWasEnabled'] = [bool]($defaultRule.Enabled -contains 'True')
@@ -198,7 +210,11 @@ if (-not $state.Contains('DefaultOpenSshRuleWasEnabled')) {
 }
 Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName 'Remote Support SSH via ZeroTier' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName 'Remote Support SSH via ZeroTier' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22 -InterfaceAlias $zeroTierAdapter.Name -Profile Any | Out-Null
+# Algunos adaptadores virtuales (incluido ZeroTier en Windows) no son aceptados
+# por -InterfaceAlias de Windows Firewall. Limitar la direccion local a la IP
+# administrada evita publicar SSH por las IP de LAN/Internet.
+New-NetFirewallRule -DisplayName 'Remote Support SSH via ZeroTier' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22 -LocalAddress $zeroTierIp -Profile Any | Out-Null
+Write-Host "SSH permitido solo para la IP ZeroTier local: $zeroTierIp" -ForegroundColor DarkGray
 
 if (-not $SkipCloudflared) {
     Write-Step 'Comprobando cloudflared para el respaldo temporal'
