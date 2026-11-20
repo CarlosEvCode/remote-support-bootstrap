@@ -13,7 +13,9 @@ firewall creada por este proyecto.
 param()
 
 $ErrorActionPreference = 'Stop'
-$InstallRoot = Join-Path $env:ProgramData 'RemoteSupportBootstrap'
+$CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+if ([string]::IsNullOrWhiteSpace($CommonAppData)) { throw 'Windows no devolvio la carpeta ProgramData requerida para la desinstalacion.' }
+$InstallRoot = Join-Path -Path $CommonAppData -ChildPath 'RemoteSupportBootstrap'
 $StatePath = Join-Path $InstallRoot 'bootstrap-state.json'
 
 function Get-UninstallEntry([string] $NamePattern) {
@@ -56,7 +58,7 @@ if ($null -ne $state.DefaultOpenSshRuleWasEnabled) {
 }
 
 if ($state.ZeroTierJoinedByBootstrap) {
-    $cli = @("$env:ProgramData\ZeroTier\One\zerotier-cli.bat", "$env:ProgramData\ZeroTier\One\zerotier-cli.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $cli = @("$CommonAppData\ZeroTier\One\zerotier-cli.bat", "$CommonAppData\ZeroTier\One\zerotier-cli.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($cli -and $PSCmdlet.ShouldProcess("red ZeroTier $($state.NetworkId)", 'abandonar')) { & $cli leave $state.NetworkId }
 }
 if ($state.TightVncInstalledByBootstrap) { Uninstall-RecordedApp 'TightVNC' 'TightVNC' }

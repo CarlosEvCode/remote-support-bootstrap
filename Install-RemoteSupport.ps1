@@ -26,7 +26,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$InstallRoot = Join-Path $env:ProgramData 'RemoteSupportBootstrap'
+$CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+if ([string]::IsNullOrWhiteSpace($CommonAppData)) { throw 'Windows no devolvio la carpeta ProgramData requerida para la instalacion.' }
+$InstallRoot = Join-Path -Path $CommonAppData -ChildPath 'RemoteSupportBootstrap'
 $InstallerCache = Join-Path $InstallRoot 'installers'
 $StatePath = Join-Path $InstallRoot 'bootstrap-state.json'
 $RepoBase = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main'
@@ -96,8 +98,8 @@ function Install-Msi([string] $Path, [switch] $Interactive) {
 
 function Get-ZeroTierCli {
     $candidates = @(
-        (Join-Path $env:ProgramData 'ZeroTier\One\zerotier-cli.bat'),
-        (Join-Path $env:ProgramData 'ZeroTier\One\zerotier-cli.exe')
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.exe')
     )
     $result = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $result) { throw 'No se encontro zerotier-cli despues de instalar ZeroTier.' }
