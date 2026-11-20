@@ -64,19 +64,23 @@ IP_ZEROTIER:5900
 
 ## Conectar por Cloudflare
 
-La ruta Cloudflare instala OpenSSH Server, lo deja iniciado y crea un lanzador en:
+La ruta Cloudflare instala OpenSSH Server, lo deja iniciado, crea un lanzador y **abre el túnel automáticamente en una ventana nueva** al terminar. El dominio `*.trycloudflare.com` aparece en esa ventana y también en la salida del instalador; el túnel queda corriendo hasta cerrar la ventana o pulsar `Ctrl+C`.
 
-```text
-C:\ProgramData\RemoteSupportBootstrap\Start-CloudflareSupport.ps1
+Si no quieres que se abra automáticamente:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow Cloudflare -NoAutoStart
 ```
 
-En Windows ejecuta:
+En ese caso puedes iniciarlo después con:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File 'C:\ProgramData\RemoteSupportBootstrap\Start-CloudflareSupport.ps1'
 ```
 
-Comparte **solo** el host `*.trycloudflare.com` que muestra el túnel. El túnel publica únicamente SSH; VNC nunca se expone directamente. La cuenta de Windows debe tener contraseña para que SSH acepte el inicio de sesión.
+Comparte **solo** el host `*.trycloudflare.com`. El túnel publica únicamente SSH; VNC nunca se expone directamente.
+
+> **Importante:** SSH usa la contraseña de la cuenta de Windows. Por defecto, Windows bloquea el inicio de sesión remoto de cuentas locales **sin contraseña** (`LimitBlankPasswordUse=1`). En ese caso usa la ruta ZeroTier o asigna una contraseña a la cuenta / crea una cuenta de soporte con contraseña. El PIN o Windows Hello no sirven para SSH.
 
 Desde Linux:
 

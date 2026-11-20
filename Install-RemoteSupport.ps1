@@ -26,6 +26,9 @@ Deja TightVNC sin autenticacion VNC. No recomendado fuera de una VM de prueba.
 
 .PARAMETER ForceRelease
 No intenta winget y usa directamente los MSI del Release.
+
+.PARAMETER NoAutoStart
+En el flujo Cloudflare no abre el tunel automaticamente; solo deja el lanzador listo.
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +43,9 @@ param(
 
     [switch] $DisableVncAuth,
 
-    [switch] $ForceRelease
+    [switch] $ForceRelease,
+
+    [switch] $NoAutoStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +54,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $InstallRoot = Join-Path $CommonAppData 'RemoteSupportBootstrap'
+$TunnelUrlFile = Join-Path $InstallRoot 'cloudflare-url.txt'
 $ReleaseBaseUrl = 'https://github.com/CarlosEvCode/remote-support-bootstrap/releases/download/bootstrap-assets-v2'
 
 # Versiones y hashes tomados de los manifiestos oficiales de winget-pkgs.
@@ -321,6 +327,12 @@ function Copy-CloudflareStarter {
     return $target
 }
 
+function Start-CloudflareTunnel([string] $StarterPath, [string] $SshUser) {
+    # Ventana independiente: el tunel sigue vivo cuando termina este instalador.
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -SshUser "{1}"' -f $StarterPath, $SshUser
+    return Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru
+}
+
 if (-not $Flow) {
     Write-Host 'Elige una ruta de soporte:' -ForegroundColor Cyan
     Write-Host '  1. ZeroTier + TightVNC directo (recomendado)'
@@ -402,14 +414,47 @@ if ($Flow -eq 'ZeroTier') {
 
     $starter = Copy-CloudflareStarter
     $windowsUser = $env:USERNAME
+    $tunnelUrl = $null
+
+    if (-not $NoAutoStart) {
+        Write-Step 'Iniciando el tunel de Cloudflare'
+        Remove-Item -LiteralPath $TunnelUrlFile -Force -ErrorAction SilentlyContinue
+        $tunnelProcess = Start-CloudflareTunnel -StarterPath $starter -SshUser $windowsUser
+        Write-Host 'Esperando el dominio *.trycloudflare.com...' -ForegroundColor DarkGray
+
+        for ($attempt = 1; $attempt -le 30; $attempt++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path -LiteralPath $TunnelUrlFile) {
+                $candidate = (Get-Content -LiteralPath $TunnelUrlFile -Raw -ErrorAction SilentlyContinue)
+                if ($candidate) { $tunnelUrl = $candidate.Trim(); break }
+            }
+            if ($tunnelProcess.HasExited) { break }
+        }
+    }
 
     Write-Host "`nLISTO (Cloudflare + SSH + TightVNC)." -ForegroundColor Green
     Write-Host "TightVNC queda iniciado. $vncStatus" -ForegroundColor Cyan
-    Write-Host "1. En este equipo ejecuta:" -ForegroundColor Yellow
-    Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
-    Write-Host '2. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
-    Write-Host '3. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
-    Write-Host "   ssh -N -L 5901:127.0.0.1:5900 -o 'ProxyCommand=cloudflared access ssh --hostname %h' $windowsUser@HOST.trycloudflare.com"
-    Write-Host '   vncviewer localhost:5901'
-    Write-Host 'La cuenta de Windows debe tener contrasena para que SSH acepte el inicio de sesion.' -ForegroundColor DarkGray
+
+    if ($NoAutoStart) {
+        Write-Host '1. En este equipo ejecuta:' -ForegroundColor Yellow
+        Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
+        Write-Host '2. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
+        Write-Host '3. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+        Write-Host "   ssh -N -L 5901:127.0.0.1:5900 -o 'ProxyCommand=cloudflared access ssh --hostname %h' $windowsUser@HOST.trycloudflare.com"
+        Write-Host '   vncviewer localhost:5901'
+    } elseif ($tunnelUrl) {
+        $tunnelHost = $tunnelUrl -replace '^https?://', ''
+        Write-Host "Dominio Cloudflare: $tunnelUrl" -ForegroundColor Yellow
+        Write-Host 'El tunel ya esta abierto en una ventana nueva y sigue activo.' -ForegroundColor Green
+        Write-Host 'Desde Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+        Write-Host "   ssh -N -L 5901:127.0.0.1:5900 -o 'ProxyCommand=cloudflared access ssh --hostname %h' $windowsUser@$tunnelHost"
+        Write-Host '   vncviewer localhost:5901'
+        Write-Host 'Cierra la ventana del tunel o pulsa Ctrl+C alli para terminarlo.' -ForegroundColor DarkGray
+    } else {
+        Write-Warning 'El tunel se inicio, pero el dominio aun no aparece en el archivo de estado.'
+        Write-Host 'Revisa la ventana nueva de Cloudflare o ejecuta manualmente:' -ForegroundColor Yellow
+        Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
+    }
+
+    Write-Host 'SSH usa la contrasena de la cuenta de Windows; una cuenta sin contrasena no podra iniciar sesion.' -ForegroundColor Yellow
 }
