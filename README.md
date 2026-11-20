@@ -1,15 +1,16 @@
 # Remote Support Bootstrap
 
-Dos rutas de respaldo para Windows. **RustDesk sigue siendo la primera opción.**
+Tres rutas de respaldo para Windows. **RustDesk sigue siendo la primera opción.**
 
 ## Rutas disponibles
 
 | Ruta | Cómo llega el técnico | Cuándo usarla |
 | --- | --- | --- |
 | **ZeroTier + TightVNC** | IP administrada de ZeroTier, puerto `5900` | Recomendada si ambos equipos pueden instalar ZeroTier |
-| **Cloudflare + SSH + TightVNC** | Quick Tunnel temporal de Cloudflare que publica solo SSH; el técnico reenvía VNC | Respaldo cuando ZeroTier no es viable |
+| **Cloudflare + SSH + TightVNC** | Quick Tunnel temporal de Cloudflare que publica SSH; reenvío SSH a VNC | Respaldo cuando ZeroTier no es viable y el usuario tiene contraseña de Windows |
+| **Cloudflare TCP + TightVNC** | Quick Tunnel temporal TCP directo a VNC (`tcp://localhost:5900`) | **Ideal cuando el usuario de Windows NO tiene contraseña o usa PIN/Hello** (sin SSH ni permisos de Windows) |
 
-Ambas rutas instalan **TightVNC** y usan **winget** como fuente principal. Si winget o la descarga del proveedor están bloqueados (por ejemplo por Fortinet), el script descarga el MSI exacto desde el Release [`bootstrap-assets-v2`](https://github.com/CarlosEvCode/remote-support-bootstrap/releases/tag/bootstrap-assets-v2) y valida su **SHA-256** antes de instalar.
+Todas las rutas instalan **TightVNC** y usan **winget** como fuente principal. Si winget o la descarga del proveedor están bloqueados (por ejemplo por Fortinet), el script descarga el MSI exacto desde el Release [`bootstrap-assets-v2`](https://github.com/CarlosEvCode/remote-support-bootstrap/releases/tag/bootstrap-assets-v2) y valida su **SHA-256** antes de instalar.
 
 Versiones fijadas:
 
@@ -33,6 +34,7 @@ El script muestra un menú para elegir la ruta. También puedes omitirlo:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier
 powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow Cloudflare
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow CloudflareVnc
 ```
 
 Si winget está bloqueado pero GitHub no, fuerza los MSI del Release:
@@ -92,6 +94,25 @@ vncviewer localhost:5901
 ```
 
 El lanzador usa `--protocol http2` por defecto para redes restrictivas. Si tu red permite QUIC, puedes ejecutarlo con `-Protocol quic`. El túnel se cierra al cerrar su ventana o presionar `Ctrl+C`.
+
+## Conectar por Cloudflare TCP (Flujo 3: Sin contraseña de Windows)
+
+Este flujo expone directamente TightVNC a través del túnel temporal de Cloudflare (`tcp://localhost:5900`), **sin requerir OpenSSH Server ni usuario/contraseña de Windows**.
+
+1. Ejecuta en Windows:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow CloudflareVnc
+   ```
+2. El túnel se abre en una ventana independiente y genera el dominio `*.trycloudflare.com`.
+3. Desde Linux, el técnico crea el proxy TCP local:
+   ```bash
+   cloudflared access tcp --hostname HOST.trycloudflare.com --url 127.0.0.1:5901
+   ```
+4. En otra terminal, abre el visor VNC apuntando al listener local:
+   ```bash
+   vncviewer localhost:5901
+   ```
+   (Usa la contraseña de VNC configurada, por defecto `1224`).
 
 ## Assets de respaldo
 

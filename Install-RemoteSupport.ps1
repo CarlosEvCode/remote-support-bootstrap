@@ -2,10 +2,11 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-Prepara soporte remoto en Windows con una de dos rutas:
+Prepara soporte remoto en Windows con una de tres rutas:
 
-  1) ZeroTier + TightVNC directo (recomendado).
-  2) Cloudflare Quick Tunnel + SSH + TightVNC local (respaldo).
+  1) ZeroTier + TightVNC directo (recomendado si ambos usan ZeroTier).
+  2) Cloudflare + SSH + TightVNC local (respaldo con autenticacion Windows).
+  3) Cloudflare TCP + TightVNC directo (ideal si el usuario Windows NO tiene contrasena).
 
 .DESCRIPTION
 winget es la fuente normal. Si winget o la descarga del proveedor estan
@@ -13,7 +14,7 @@ bloqueados (por ejemplo por Fortinet), se usa el MSI exacto publicado en el
 Release del repositorio y se valida su SHA-256 antes de instalar.
 
 .PARAMETER Flow
-Omite el menu: ZeroTier o Cloudflare.
+Omite el menu: ZeroTier, Cloudflare o CloudflareVnc.
 
 .PARAMETER NetworkId
 Red de ZeroTier a la que se une el equipo.
@@ -32,7 +33,7 @@ En el flujo Cloudflare no abre el tunel automaticamente; solo deja el lanzador l
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('ZeroTier', 'Cloudflare')]
+    [ValidateSet('ZeroTier', 'Cloudflare', 'CloudflareVnc')]
     [string] $Flow,
 
     [ValidatePattern('^[a-fA-F0-9]{16}$')]
@@ -55,6 +56,7 @@ $ProgressPreference = 'SilentlyContinue'
 $CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $InstallRoot = Join-Path $CommonAppData 'RemoteSupportBootstrap'
 $TunnelUrlFile = Join-Path $InstallRoot 'cloudflare-url.txt'
+$TunnelVncUrlFile = Join-Path $InstallRoot 'cloudflare-vnc-url.txt'
 $ReleaseBaseUrl = 'https://github.com/CarlosEvCode/remote-support-bootstrap/releases/download/bootstrap-assets-v2'
 
 # Versiones y hashes tomados de los manifiestos oficiales de winget-pkgs.
@@ -314,42 +316,52 @@ function Enable-OpenSshServer {
     }
 }
 
-function Copy-CloudflareStarter {
+function Copy-CloudflareStarter([string] $FileName = 'Start-CloudflareSupport.ps1') {
     New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-    $target = Join-Path $InstallRoot 'Start-CloudflareSupport.ps1'
-    $localCopy = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts\Start-CloudflareSupport.ps1' } else { $null }
+    $target = Join-Path $InstallRoot $FileName
+    $localCopy = if ($PSScriptRoot) { Join-Path $PSScriptRoot "scripts\$FileName" } else { $null }
 
     if ($localCopy -and (Test-Path -LiteralPath $localCopy)) {
         Copy-Item -LiteralPath $localCopy -Destination $target -Force
     } else {
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/scripts/Start-CloudflareSupport.ps1' -OutFile $target
+        Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/scripts/$FileName" -OutFile $target
     }
     return $target
 }
 
 function Start-CloudflareTunnel([string] $StarterPath, [string] $SshUser) {
     # Ventana independiente: el tunel sigue vivo cuando termina este instalador.
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -SshUser "{1}"' -f $StarterPath, $SshUser
+    $arguments = if ($SshUser) {
+        '-NoProfile -ExecutionPolicy Bypass -File "{0}" -SshUser "{1}"' -f $StarterPath, $SshUser
+    } else {
+        '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $StarterPath
+    }
     return Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -PassThru
 }
 
 if (-not $Flow) {
     Write-Host 'Elige una ruta de soporte:' -ForegroundColor Cyan
     Write-Host '  1. ZeroTier + TightVNC directo (recomendado)'
-    Write-Host '  2. Cloudflare + SSH + TightVNC (respaldo temporal)'
+    Write-Host '  2. Cloudflare + SSH + TightVNC (respaldo temporal; requiere clave de Windows)'
+    Write-Host '  3. Cloudflare TCP + TightVNC (directo; ideal si el usuario NO tiene contrasena)'
     do {
-        $choice = Read-Host 'Escribe 1 o 2'
-    } until ($choice -in '1', '2')
-    $Flow = if ($choice -eq '1') { 'ZeroTier' } else { 'Cloudflare' }
+        $choice = Read-Host 'Escribe 1, 2 o 3'
+    } until ($choice -in '1', '2', '3')
+    $Flow = switch ($choice) {
+        '1' { 'ZeroTier' }
+        '2' { 'Cloudflare' }
+        '3' { 'CloudflareVnc' }
+    }
 }
 
-Write-Step 'Instalando TightVNC (comun a ambas rutas)'
+Write-Step 'Instalando TightVNC (comun a todas las rutas)'
 Install-RemotePackage 'GlavSoft.TightVNC'
 
 Write-Step 'Configurando TightVNC'
 $tvnserver = Find-TightVncServer
+$allowLoopback = ($Flow -in 'Cloudflare', 'CloudflareVnc')
 $vncReady = Initialize-TightVnc -ServerPath $tvnserver -Password $VncPassword `
-    -AllowLoopback:($Flow -eq 'Cloudflare') -DisableAuth:$DisableVncAuth
+    -AllowLoopback:$allowLoopback -DisableAuth:$DisableVncAuth
 
 $vncAuthStatus = if ($DisableVncAuth) {
     'Autenticacion VNC: DESACTIVADA'
@@ -457,4 +469,52 @@ if ($Flow -eq 'ZeroTier') {
     }
 
     Write-Host 'SSH usa la contrasena de la cuenta de Windows; una cuenta sin contrasena no podra iniciar sesion.' -ForegroundColor Yellow
+} elseif ($Flow -eq 'CloudflareVnc') {
+    Write-Step 'Instalando cloudflared'
+    Install-RemotePackage 'Cloudflare.cloudflared'
+
+    $starter = Copy-CloudflareStarter 'Start-CloudflareVncSupport.ps1'
+    $tunnelUrl = $null
+
+    if (-not $NoAutoStart) {
+        Write-Step 'Iniciando el tunel TCP de Cloudflare para VNC'
+        Remove-Item -LiteralPath $TunnelVncUrlFile -Force -ErrorAction SilentlyContinue
+        $tunnelProcess = Start-CloudflareTunnel -StarterPath $starter
+        Write-Host 'Esperando el dominio *.trycloudflare.com...' -ForegroundColor DarkGray
+
+        for ($attempt = 1; $attempt -le 30; $attempt++) {
+            Start-Sleep -Seconds 1
+            if (Test-Path -LiteralPath $TunnelVncUrlFile) {
+                $candidate = (Get-Content -LiteralPath $TunnelVncUrlFile -Raw -ErrorAction SilentlyContinue)
+                if ($candidate) { $tunnelUrl = $candidate.Trim(); break }
+            }
+            if ($tunnelProcess.HasExited) { break }
+        }
+    }
+
+    Write-Host "`nLISTO (Cloudflare TCP + TightVNC directo)." -ForegroundColor Green
+    Write-Host "TightVNC queda iniciado. $vncStatus" -ForegroundColor Cyan
+    Write-Host 'No requiere usuario ni contrasena de Windows.' -ForegroundColor Green
+
+    if ($NoAutoStart) {
+        Write-Host '1. En este equipo ejecuta:' -ForegroundColor Yellow
+        Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
+        Write-Host '2. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
+        Write-Host '3. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+        Write-Host '   cloudflared access tcp --hostname HOST.trycloudflare.com --url 127.0.0.1:5901'
+        Write-Host '   vncviewer localhost:5901'
+    } elseif ($tunnelUrl) {
+        $tunnelHost = $tunnelUrl -replace '^https?://', ''
+        Write-Host "Dominio Cloudflare: $tunnelUrl" -ForegroundColor Yellow
+        Write-Host 'El tunel ya esta abierto en una ventana nueva y sigue activo.' -ForegroundColor Green
+        Write-Host 'Desde Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+        Write-Host "   1) cloudflared access tcp --hostname $tunnelHost --url 127.0.0.1:5901"
+        Write-Host "   2) vncviewer localhost:5901"
+        Write-Host "   Contrasena VNC: $VncPassword" -ForegroundColor Cyan
+        Write-Host 'Cierra la ventana del tunel o pulsa Ctrl+C alli para terminarlo.' -ForegroundColor DarkGray
+    } else {
+        Write-Warning 'El tunel se inicio, pero el dominio aun no aparece en el archivo de estado.'
+        Write-Host 'Revisa la ventana nueva de Cloudflare o ejecuta manualmente:' -ForegroundColor Yellow
+        Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
+    }
 }
