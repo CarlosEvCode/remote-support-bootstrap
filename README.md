@@ -23,8 +23,9 @@ Versiones fijadas:
 Abre **PowerShell como administrador**:
 
 ```powershell
-$url = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1'
+$url = "https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1?v=$([DateTime]::UtcNow.Ticks)"
 $file = Join-Path ([IO.Path]::GetTempPath()) 'Install-RemoteSupport.ps1'
+Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
 Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file
 powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
