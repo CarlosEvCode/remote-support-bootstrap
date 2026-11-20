@@ -195,12 +195,13 @@ if (-not $SkipVnc) {
 }
 
 Write-Step 'Copiando el iniciador de Cloudflare'
-$scriptSource = Join-Path $PSScriptRoot 'scripts\Start-CloudflareSupport.ps1'
+# Con `irm ... | iex` no hay archivo en disco y $PSScriptRoot esta vacio.
+$scriptSource = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts\Start-CloudflareSupport.ps1' } else { $null }
 $scriptTarget = Join-Path $InstallRoot 'Start-CloudflareSupport.ps1'
-if (Test-Path $scriptSource) { Copy-Item -Force $scriptSource $scriptTarget } else { Invoke-WebRequest -Uri "$RepoBase/scripts/Start-CloudflareSupport.ps1" -OutFile $scriptTarget -UseBasicParsing }
-$uninstallSource = Join-Path $PSScriptRoot 'Uninstall-RemoteSupport.ps1'
+if ($scriptSource -and (Test-Path $scriptSource)) { Copy-Item -Force $scriptSource $scriptTarget } else { Invoke-WebRequest -Uri "$RepoBase/scripts/Start-CloudflareSupport.ps1" -OutFile $scriptTarget -UseBasicParsing }
+$uninstallSource = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'Uninstall-RemoteSupport.ps1' } else { $null }
 $uninstallTarget = Join-Path $InstallRoot 'Uninstall-RemoteSupport.ps1'
-if (Test-Path $uninstallSource) { Copy-Item -Force $uninstallSource $uninstallTarget } else { Invoke-WebRequest -Uri "$RepoBase/Uninstall-RemoteSupport.ps1" -OutFile $uninstallTarget -UseBasicParsing }
+if ($uninstallSource -and (Test-Path $uninstallSource)) { Copy-Item -Force $uninstallSource $uninstallTarget } else { Invoke-WebRequest -Uri "$RepoBase/Uninstall-RemoteSupport.ps1" -OutFile $uninstallTarget -UseBasicParsing }
 
 Write-Host "`nINSTALACION BASE COMPLETA" -ForegroundColor Green
 Write-Host "1. Autoriza este equipo en ZeroTier Central (Network ID: $NetworkId)."
