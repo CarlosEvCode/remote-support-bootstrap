@@ -143,7 +143,15 @@ function Get-ZeroTierAdapter {
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $InstallerCache | Out-Null
 $state = [ordered]@{ Version = 1; NetworkId = $NetworkId; OpenSshInstalledByBootstrap = $false; ZeroTierInstalledByBootstrap = $false; ZeroTierJoinedByBootstrap = $false; CloudflaredInstalledByBootstrap = $false; TightVncInstalledByBootstrap = $false }
-if (Test-Path $StatePath) { try { $state = Get-Content $StatePath -Raw | ConvertFrom-Json } catch { Write-Warning 'El estado anterior no es legible; se creara uno nuevo.' } }
+if (Test-Path $StatePath) {
+    try {
+        # ConvertFrom-Json devuelve PSCustomObject; normalizamos a diccionario
+        # para no depender de Add-Member ni de su enlace de parametros.
+        $savedState = Get-Content $StatePath -Raw | ConvertFrom-Json
+        $state = [ordered]@{}
+        $savedState.PSObject.Properties | ForEach-Object { $state[$_.Name] = $_.Value }
+    } catch { Write-Warning 'El estado anterior no es legible; se creara uno nuevo.' }
+}
 
 Write-Step 'Comprobando OpenSSH Server'
 $sshCapability = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
@@ -153,9 +161,9 @@ if ($sshCapability.State -ne 'Installed') {
     $state.OpenSshInstalledByBootstrap = $true; Save-State
 }
 $sshd = Get-CimInstance Win32_Service -Filter "Name='sshd'"
-if (-not ($state.PSObject.Properties.Name -contains 'SshdOriginalStartMode')) {
-    $state | Add-Member -NotePropertyName SshdOriginalStartMode -NotePropertyValue $sshd.StartMode
-    $state | Add-Member -NotePropertyName SshdWasRunning -NotePropertyValue ($sshd.State -eq 'Running')
+if (-not $state.Contains('SshdOriginalStartMode')) {
+    $state['SshdOriginalStartMode'] = $sshd.StartMode
+    $state['SshdWasRunning'] = ($sshd.State -eq 'Running')
     Save-State
 }
 Set-Service -Name sshd -StartupType Automatic
@@ -183,9 +191,9 @@ if (Test-ZeroTierNetwork $zeroTierCli $NetworkId) {
 
 Write-Step 'Restringiendo SSH a la interfaz ZeroTier'
 $zeroTierAdapter = Get-ZeroTierAdapter
-if (-not ($state.PSObject.Properties.Name -contains 'DefaultOpenSshRuleWasEnabled')) {
+if (-not $state.Contains('DefaultOpenSshRuleWasEnabled')) {
     $defaultRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    $state | Add-Member -NotePropertyName DefaultOpenSshRuleWasEnabled -NotePropertyValue ([bool]($defaultRule.Enabled -contains 'True'))
+    $state['DefaultOpenSshRuleWasEnabled'] = [bool]($defaultRule.Enabled -contains 'True')
     Save-State
 }
 Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
