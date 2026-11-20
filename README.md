@@ -6,9 +6,9 @@ Tres rutas de respaldo para Windows. **RustDesk sigue siendo la primera opción.
 
 | Ruta | Cómo llega el técnico | Cuándo usarla |
 | --- | --- | --- |
-| **ZeroTier + TightVNC** | IP administrada de ZeroTier, puerto `5900` | Recomendada si ambos equipos pueden instalar ZeroTier |
-| **Cloudflare + SSH + TightVNC** | Quick Tunnel temporal de Cloudflare que publica SSH; reenvío SSH a VNC | Respaldo cuando ZeroTier no es viable y el usuario tiene contraseña de Windows |
-| **Cloudflare TCP + TightVNC** | Quick Tunnel temporal TCP directo a VNC (`tcp://localhost:5900`) | **Ideal cuando el usuario de Windows NO tiene contraseña o usa PIN/Hello** (sin SSH ni permisos de Windows) |
+| **Cloudflare TCP + TightVNC** (Opción 1) | Quick Tunnel temporal TCP directo a VNC (`tcp://localhost:5900`) | **Principal y recomendada:** No requiere abrir puertos, ni VPN, ni contraseñas de Windows (ideal para cuentas sin clave, PIN o Hello) |
+| **ZeroTier + TightVNC** (Opción 2) | IP administrada de ZeroTier, puerto `5900` | Segunda opción si ambos equipos tienen o pueden instalar ZeroTier |
+| **Cloudflare + SSH + TightVNC** (Opción 3) | Quick Tunnel temporal que publica SSH; reenvío SSH a VNC | Respaldo adicional cuando se requiere explícitamente túnel SSH (requiere contraseña de Windows) |
 
 Todas las rutas instalan **TightVNC** y usan **winget** como fuente principal. Si winget o la descarga del proveedor están bloqueados (por ejemplo por Fortinet), el script descarga el MSI exacto desde el Release [`bootstrap-assets-v2`](https://github.com/CarlosEvCode/remote-support-bootstrap/releases/tag/bootstrap-assets-v2) y valida su **SHA-256** antes de instalar.
 
@@ -29,12 +29,12 @@ Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file
 powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
-El script muestra un menú para elegir la ruta. También puedes omitirlo:
+El script muestra un menú para elegir la ruta (por defecto la opción 1). También puedes especificarla directamente:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow CloudflareVnc
 powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier
 powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow Cloudflare
-powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow CloudflareVnc
 ```
 
 Si winget está bloqueado pero GitHub no, fuerza los MSI del Release:

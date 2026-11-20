@@ -4,9 +4,9 @@
 .SYNOPSIS
 Prepara soporte remoto en Windows con una de tres rutas:
 
-  1) ZeroTier + TightVNC directo (recomendado si ambos usan ZeroTier).
-  2) Cloudflare + SSH + TightVNC local (respaldo con autenticacion Windows).
-  3) Cloudflare TCP + TightVNC directo (ideal si el usuario Windows NO tiene contrasena).
+  1) Cloudflare TCP + TightVNC directo (recomendado; sin requerir contrasena de Windows).
+  2) ZeroTier + TightVNC directo (VPN administrada; requiere ZeroTier en ambos lados).
+  3) Cloudflare + SSH + TightVNC local (respaldo; requiere contrasena local de Windows).
 
 .DESCRIPTION
 winget es la fuente normal. Si winget o la descarga del proveedor estan
@@ -33,7 +33,7 @@ En el flujo Cloudflare no abre el tunel automaticamente; solo deja el lanzador l
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('ZeroTier', 'Cloudflare', 'CloudflareVnc')]
+    [ValidateSet('CloudflareVnc', 'ZeroTier', 'Cloudflare')]
     [string] $Flow,
 
     [ValidatePattern('^[a-fA-F0-9]{16}$')]
@@ -354,16 +354,17 @@ function Start-CloudflareTunnel([string] $StarterPath, [string] $SshUser) {
 
 if (-not $Flow) {
     Write-Host 'Elige una ruta de soporte:' -ForegroundColor Cyan
-    Write-Host '  1. ZeroTier + TightVNC directo (recomendado)'
-    Write-Host '  2. Cloudflare + SSH + TightVNC (respaldo temporal; requiere clave de Windows)'
-    Write-Host '  3. Cloudflare TCP + TightVNC (directo; ideal si el usuario NO tiene contrasena)'
+    Write-Host '  1. Cloudflare TCP + TightVNC (recomendado; directo, sin contrasena de Windows)'
+    Write-Host '  2. ZeroTier + TightVNC directo (requiere ZeroTier en ambos equipos)'
+    Write-Host '  3. Cloudflare + SSH + TightVNC (legado/respaldo; requiere contrasena de Windows)'
     do {
-        $choice = Read-Host 'Escribe 1, 2 o 3'
+        $choice = Read-Host 'Escribe 1, 2 o 3 (por defecto 1)'
+        if ([string]::IsNullOrWhiteSpace($choice)) { $choice = '1' }
     } until ($choice -in '1', '2', '3')
     $Flow = switch ($choice) {
-        '1' { 'ZeroTier' }
-        '2' { 'Cloudflare' }
-        '3' { 'CloudflareVnc' }
+        '1' { 'CloudflareVnc' }
+        '2' { 'ZeroTier' }
+        '3' { 'Cloudflare' }
     }
 }
 
