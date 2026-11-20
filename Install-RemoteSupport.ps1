@@ -185,7 +185,7 @@ Write-Step 'Restringiendo SSH a la interfaz ZeroTier'
 $zeroTierAdapter = Get-ZeroTierAdapter
 if (-not ($state.PSObject.Properties.Name -contains 'DefaultOpenSshRuleWasEnabled')) {
     $defaultRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    $state | Add-Member -NotePropertyName DefaultOpenSshRuleWasEnabled -NotePropertyValue [bool]($defaultRule.Enabled -contains 'True')
+    $state | Add-Member -NotePropertyName DefaultOpenSshRuleWasEnabled -NotePropertyValue ([bool]($defaultRule.Enabled -contains 'True'))
     Save-State
 }
 Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
