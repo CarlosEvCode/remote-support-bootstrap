@@ -1,86 +1,75 @@
 # Remote Support Bootstrap
 
-Plan B para soporte de equipos Windows cuando RustDesk o AnyDesk no funcionan.
-VNC no se publica: TightVNC queda detrás de SSH.
+Dos rutas de respaldo para Windows. **RustDesk sigue siendo la primera opción.**
 
-```text
-Linux ── ZeroTier o Cloudflare Tunnel ── SSH ── 127.0.0.1:5900 (TightVNC)
-```
+## Rutas disponibles
 
-## Instalación rápida y sin descargas repetidas
+| Ruta | Cómo llega el técnico | Cuándo usarla |
+| --- | --- | --- |
+| **ZeroTier + TightVNC** | IP administrada de ZeroTier, puerto `5900` | Recomendada si ambos equipos pueden instalar ZeroTier |
+| **Cloudflare + SSH + TightVNC** | Quick Tunnel temporal de Cloudflare que publica solo SSH; el técnico reenvía VNC | Respaldo cuando ZeroTier no es viable |
 
-El instalador detecta OpenSSH, ZeroTier, cloudflared y TightVNC ya instalados,
-por lo que no los reinstala. Las MSI verificadas quedan en una caché persistente:
+Ambas rutas instalan **TightVNC** y usan **winget** como fuente principal. Si winget o la descarga del proveedor están bloqueados (por ejemplo por Fortinet), el script descarga el MSI exacto desde el Release [`bootstrap-assets-v2`](https://github.com/CarlosEvCode/remote-support-bootstrap/releases/tag/bootstrap-assets-v2) y valida su **SHA-256** antes de instalar.
 
-```text
-C:\ProgramData\RemoteSupportBootstrap\installers
-```
+Versiones fijadas:
 
-En una nueva ejecución se usa esa caché. Primero intenta obtener cada asset del
-último Release de este repositorio y, si aún no está publicado, usa el proveedor
-oficial. Siempre exige una firma Authenticode válida antes de instalar.
+- TightVNC `2.8.89`
+- ZeroTier One `1.16.2`
+- cloudflared `2026.11.1`
 
-Para preparar otro equipo sin Internet, copia la caché a una USB y ejecuta:
+## Ejecutar en Windows
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -InstallerSource 'E:\installers'
-```
-
-Usa `-RefreshInstallers` solo si quieres reemplazar deliberadamente la caché.
-
-### Assets en GitHub Releases
-
-No subas binarios a Git: harían pesados los clones y el historial. Para este
-proyecto sí es apropiado adjuntarlos a un Release publicado. Sube las MSI desde
-sus proveedores oficiales, revisa que tengan firma digital válida en Windows y
-usa exactamente estos nombres (el instalador usa `releases/latest/download`):
-
-- `ZeroTier-One.msi`
-- `cloudflared-windows-amd64.msi`
-- `tightvnc-4.0.2-x64.msi`
-
-## Uso en Windows
-
-Abre PowerShell como administrador y descarga una copia revisable. Este es el
-método recomendado: conserva el contexto de un archivo `.ps1` y evita
-`Invoke-Expression`.
+Abre **PowerShell como administrador**:
 
 ```powershell
 $url = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1'
 $file = Join-Path ([IO.Path]::GetTempPath()) 'Install-RemoteSupport.ps1'
 Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file
-notepad $file
 powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
-Si prefieres una sola línea, úsala igualmente sin `iex`:
+El script muestra un menú para elegir la ruta. También puedes omitirlo:
 
 ```powershell
-$f = Join-Path ([IO.Path]::GetTempPath()) 'Install-RemoteSupport.ps1'; iwr -UseBasicParsing 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow Cloudflare
 ```
 
-El Network ID predeterminado es `c1644bfd5484e1f8`. Autoriza el equipo nuevo en
-ZeroTier Central. Durante el instalador interactivo de TightVNC, configura una
-contraseña fuerte; nunca viaja ni queda escrita en este repositorio.
+Si winget está bloqueado pero GitHub no, fuerza los MSI del Release:
 
-## Conexión primaria desde Linux
-
-Busca la IP administrada del equipo en ZeroTier Central:
-
-```bash
-ssh -N -L 5901:127.0.0.1:5900 USUARIO_WINDOWS@IP_ZEROTIER
-vncviewer localhost:5901
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier -ForceRelease
 ```
 
-## Respaldo Cloudflare
+Al terminar, abre **TightVNC Server – Control Center (System Service)** y define una contraseña. No hay contraseña en el script ni en el repositorio.
 
-En Windows:
+## Conectar por ZeroTier
+
+1. El script une el equipo a la red `c1644bfd5484e1f8` y muestra su **Node ID**.
+2. Autoriza ese nodo en [ZeroTier Central](https://my.zerotier.com/).
+3. Desde el otro equipo, conecta el visor VNC a la Managed IP del nodo:
+
+```text
+IP_ZEROTIER:5900
+```
+
+## Conectar por Cloudflare
+
+La ruta Cloudflare instala OpenSSH Server, lo deja iniciado y crea un lanzador en:
+
+```text
+C:\ProgramData\RemoteSupportBootstrap\Start-CloudflareSupport.ps1
+```
+
+En Windows ejecuta:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File 'C:\ProgramData\RemoteSupportBootstrap\Start-CloudflareSupport.ps1'
 ```
 
-Comparte el host `*.trycloudflare.com`. En Linux:
+Comparte **solo** el host `*.trycloudflare.com` que muestra el túnel. El túnel publica únicamente SSH; VNC nunca se expone directamente. La cuenta de Windows debe tener contraseña para que SSH acepte el inicio de sesión.
+
+Desde Linux:
 
 ```bash
 ssh -N -L 5901:127.0.0.1:5900 \
@@ -89,23 +78,14 @@ ssh -N -L 5901:127.0.0.1:5900 \
 vncviewer localhost:5901
 ```
 
-## Deshacer únicamente los cambios del bootstrap
+El lanzador usa `--protocol http2` por defecto para redes restrictivas. Si tu red permite QUIC, puedes ejecutarlo con `-Protocol quic`. El túnel se cierra al cerrar su ventana o presionar `Ctrl+C`.
 
-El instalador guarda qué componentes ya existían y cuáles instaló él. Para
-retirar solo sus cambios, abre PowerShell como administrador y ejecuta:
+## Assets de respaldo
 
-```powershell
-powershell -ExecutionPolicy Bypass -File 'C:\ProgramData\RemoteSupportBootstrap\Uninstall-RemoteSupport.ps1'
-```
+El Release `bootstrap-assets-v2` contiene exactamente los instaladores de las versiones fijadas:
 
-Pedirá confirmación. Elimina únicamente su regla de firewall, abandona ZeroTier
-solo si el bootstrap unió la red, y desinstala solo componentes que este
-bootstrap haya instalado. Si falta el registro de estado, se detiene sin tocar
-software ajeno.
+- `tightvnc-2.8.89-x64.msi`
+- `ZeroTier-One-1.16.2.msi`
+- `cloudflared-2026.11.1-windows-amd64.msi`
 
-## Notas de seguridad
-
-- SSH entrante queda permitido solo por el adaptador ZeroTier.
-- No se crea una regla para VNC ni se abren TCP/5900 en LAN o Internet.
-- No incluye contraseñas, claves SSH ni tokens.
-- Cloudflare es temporal: el túnel muere al cerrar esa ventana y su dominio cambia.
+Los SHA-256 están fijados en `Install-RemoteSupport.ps1` y coinciden con los manifiestos oficiales de [winget-pkgs](https://github.com/microsoft/winget-pkgs).

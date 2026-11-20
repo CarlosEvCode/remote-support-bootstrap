@@ -2,262 +2,266 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-Prepara ZeroTier + OpenSSH + TightVNC y el respaldo temporal Cloudflare.
+Prepara soporte remoto en Windows con una de dos rutas:
+
+  1) ZeroTier + TightVNC directo (recomendado).
+  2) Cloudflare Quick Tunnel + SSH + TightVNC local (respaldo).
 
 .DESCRIPTION
-Los instaladores se conservan en una cache persistente para que una segunda
-ejecucion (o una instalacion desde USB) no dependa otra vez de Internet.
-Las MSI se validan con Authenticode antes de ejecutarse.
+winget es la fuente normal. Si winget o la descarga del proveedor estan
+bloqueados (por ejemplo por Fortinet), se usa el MSI exacto publicado en el
+Release del repositorio y se valida su SHA-256 antes de instalar.
+
+.PARAMETER Flow
+Omite el menu: ZeroTier o Cloudflare.
+
+.PARAMETER NetworkId
+Red de ZeroTier a la que se une el equipo.
+
+.PARAMETER ForceRelease
+No intenta winget y usa directamente los MSI del Release.
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('ZeroTier', 'Cloudflare')]
+    [string] $Flow,
+
     [ValidatePattern('^[a-fA-F0-9]{16}$')]
     [string] $NetworkId = 'c1644bfd5484e1f8',
-    [switch] $SkipVnc,
-    [switch] $SkipCloudflared,
-    # Carpeta opcional (por ejemplo, una USB) que contiene las MSI indicadas abajo.
-    [string] $InstallerSource,
-    [switch] $RefreshInstallers,
-    # Los assets del ultimo GitHub Release se prueban antes que el proveedor.
-    [string] $ReleaseBaseUrl = 'https://github.com/CarlosEvCode/remote-support-bootstrap/releases/latest/download'
+
+    [switch] $ForceRelease
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-if ([string]::IsNullOrWhiteSpace($CommonAppData)) { throw 'Windows no devolvio la carpeta ProgramData requerida para la instalacion.' }
-if ($InstallerSource -and -not (Test-Path -LiteralPath $InstallerSource -PathType Container)) {
-    throw "InstallerSource no es una carpeta existente: $InstallerSource"
-}
-$InstallRoot = Join-Path -Path $CommonAppData -ChildPath 'RemoteSupportBootstrap'
-$InstallerCache = Join-Path $InstallRoot 'installers'
-$StatePath = Join-Path $InstallRoot 'bootstrap-state.json'
-$RepoBase = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main'
+$InstallRoot = Join-Path $CommonAppData 'RemoteSupportBootstrap'
+$ReleaseBaseUrl = 'https://github.com/CarlosEvCode/remote-support-bootstrap/releases/download/bootstrap-assets-v2'
 
-function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
-
-function Test-SignedInstaller([string] $Path) {
-    $signature = Get-AuthenticodeSignature -FilePath $Path
-    if ($signature.Status -ne 'Valid') {
-        throw "La firma Authenticode no es valida para $Path. Estado: $($signature.Status)"
+# Versiones y hashes tomados de los manifiestos oficiales de winget-pkgs.
+$Packages = [ordered]@{
+    'GlavSoft.TightVNC' = @{
+        Version = '2.8.89'
+        Asset   = 'tightvnc-2.8.89-x64.msi'
+        Sha256  = 'DFF8D7E40A81E0B86BA1D9D5CC0D4F22D08354C50C9CBDC0825BBB6CCFB1073C'
+    }
+    'ZeroTier.ZeroTierOne' = @{
+        Version = '1.16.2'
+        Asset   = 'ZeroTier-One-1.16.2.msi'
+        Sha256  = '42514072B0FE44B8F66E0395BCD23A0B1D1642C28ED00831F1527B2F41B14670'
+    }
+    'Cloudflare.cloudflared' = @{
+        Version = '2026.11.1'
+        Asset   = 'cloudflared-2026.11.1-windows-amd64.msi'
+        Sha256  = 'A92404494335FF48FEAADD7EF89A7144465D9BD8E3C5316F0DF722FE86B7D93E'
     }
 }
 
-function Save-State { $script:state | ConvertTo-Json | Set-Content -Path $StatePath -Encoding UTF8 }
-
-function Get-Installer([string] $FileName, [string[]] $Uris) {
-    $cached = Join-Path $InstallerCache $FileName
-    $external = if ($InstallerSource) { Join-Path $InstallerSource $FileName }
-
-    if ($external -and (Test-Path $external)) {
-        Write-Host "Usando instalador local: $external" -ForegroundColor DarkGray
-        Test-SignedInstaller $external
-        Copy-Item -Force $external $cached
-        return $cached
-    }
-    if ((Test-Path $cached) -and -not $RefreshInstallers) {
-        try {
-            Test-SignedInstaller $cached
-            Write-Host "Usando cache: $cached" -ForegroundColor DarkGray
-            return $cached
-        } catch {
-            Write-Warning 'La copia en cache no es valida; se descargara de nuevo.'
-            Remove-Item -Force $cached
-        }
-    }
-
-    Write-Host "Descargando $FileName (solo esta vez; luego queda en cache)..." -ForegroundColor DarkGray
-    $partial = "$cached.download"
-    Remove-Item -Force $partial -ErrorAction SilentlyContinue
-    $lastError = $null
-    foreach ($uri in $Uris) {
-      foreach ($attempt in 1..3) {
-        try {
-            Invoke-WebRequest -Uri $Uri -OutFile $partial -UseBasicParsing
-            Test-SignedInstaller $partial
-            Move-Item -Force $partial $cached
-            return $cached
-        } catch {
-            $lastError = $_
-            Remove-Item -Force $partial -ErrorAction SilentlyContinue
-            # Un release que aun no tiene este asset no debe añadir 6 s por intento.
-            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { break }
-            if ($attempt -lt 3) { Start-Sleep -Seconds (2 * $attempt) }
-        }
-      }
-    }
-    throw "No se pudo obtener $FileName desde ninguna fuente. $lastError"
+function Write-Step([string] $Message) {
+    Write-Host "`n==> $Message" -ForegroundColor Cyan
 }
 
-function Install-Msi([string] $Path, [switch] $Interactive) {
-    $arguments = @('/i', "`"$Path`"")
-    if (-not $Interactive) { $arguments += @('/qn', '/norestart') }
-    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -notin 0, 3010) { throw "MSI fallo con codigo $($process.ExitCode): $Path" }
-    if ($process.ExitCode -eq 3010) { Write-Warning 'Windows solicita reiniciar para completar una instalacion.' }
-}
+function Test-WingetPackage([string] $Id) {
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { return $false }
 
-function Get-ZeroTierCli {
-    $candidates = @(
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.exe'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x64.exe'),
-        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x86.exe')
-    )
-    $result = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $result) { throw 'No se encontro zerotier-cli despues de instalar ZeroTier.' }
-    $result
-}
-
-function Invoke-ZeroTierCli([string] $Cli, [string[]] $Arguments) {
-    # Las MSI recientes incluyen zerotier-one_x64.exe, no zerotier-cli.bat.
-    # -q activa su personalidad compatible con zerotier-cli.
-    if ((Split-Path -Leaf $Cli) -match '^zerotier-one_') { & $Cli -q @Arguments }
-    else { & $Cli @Arguments }
-}
-
-function Get-CloudflaredExe {
-    $command = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
-    $candidates = @("$env:ProgramFiles\cloudflared\cloudflared.exe", "${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe", 'C:\Cloudflared\bin\cloudflared.exe')
-    $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-}
-
-function Test-TightVncInstalled { [bool](Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue) }
-
-function Test-ZeroTierNetwork([string] $Cli, [string] $Id) {
-    $networks = Invoke-ZeroTierCli -Cli $Cli -Arguments @('listnetworks') 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo consultar las redes de ZeroTier: $networks" }
-    [bool]($networks | Select-String -SimpleMatch $Id -Quiet)
-}
-
-function Get-ZeroTierAdapter {
-    foreach ($attempt in 1..15) {
-        $adapter = Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceDescription -match 'ZeroTier' -or $_.Name -match 'ZeroTier' } | Select-Object -First 1
-        if ($adapter) { return $adapter }
-        Start-Sleep -Seconds 2
-    }
-    throw 'El adaptador ZeroTier no aparecio tras 30 segundos. Reinicia el servicio ZeroTierOneService y vuelve a ejecutar el instalador.'
-}
-
-function Get-ZeroTierManagedIPv4([object] $Adapter) {
-    foreach ($attempt in 1..30) {
-        $address = Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-            Where-Object { $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '127.0.0.1' } |
-            Select-Object -First 1
-        if ($address) { return $address.IPAddress }
-        Start-Sleep -Seconds 2
-    }
-    throw 'ZeroTier aun no tiene una IPv4 administrada. Autoriza este nodo en ZeroTier Central, espera unos segundos y vuelve a ejecutar el instalador.'
-}
-
-New-Item -ItemType Directory -Force -Path $InstallRoot, $InstallerCache | Out-Null
-$state = [ordered]@{ Version = 1; NetworkId = $NetworkId; OpenSshInstalledByBootstrap = $false; ZeroTierInstalledByBootstrap = $false; ZeroTierJoinedByBootstrap = $false; CloudflaredInstalledByBootstrap = $false; TightVncInstalledByBootstrap = $false }
-if (Test-Path $StatePath) {
+    # winget escribe avisos en stderr; con ErrorActionPreference=Stop eso puede
+    # convertirse en un error terminante aunque la consulta haya funcionado.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        # ConvertFrom-Json devuelve PSCustomObject; normalizamos a diccionario
-        # para no depender de Add-Member ni de su enlace de parametros.
-        $savedState = Get-Content $StatePath -Raw | ConvertFrom-Json
-        $state = [ordered]@{}
-        $savedState.PSObject.Properties | ForEach-Object { $state[$_.Name] = $_.Value }
-    } catch { Write-Warning 'El estado anterior no es legible; se creara uno nuevo.' }
+        $output = & winget.exe list --id $Id --exact --accept-source-agreements --disable-interactivity 2>$null | Out-String
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    return ($exitCode -eq 0 -and $output -match [regex]::Escape($Id))
 }
 
-Write-Step 'Comprobando OpenSSH Server'
-$sshCapability = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
-if ($sshCapability.State -ne 'Installed') {
-    Write-Host 'OpenSSH no esta instalado; Windows puede tardar al descargar esta capacidad.' -ForegroundColor DarkGray
-    Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
-    $state.OpenSshInstalledByBootstrap = $true; Save-State
-}
-$sshd = Get-CimInstance Win32_Service -Filter "Name='sshd'"
-if (-not $state.Contains('SshdOriginalStartMode')) {
-    $state['SshdOriginalStartMode'] = $sshd.StartMode
-    $state['SshdWasRunning'] = ($sshd.State -eq 'Running')
-    Save-State
-}
-Set-Service -Name sshd -StartupType Automatic
-if ((Get-Service sshd).Status -ne 'Running') { Start-Service sshd }
+function Get-ReleaseInstaller([string] $Id) {
+    $package = $Packages[$Id]
+    $cache = Join-Path $InstallRoot 'installers'
+    $path = Join-Path $cache $package.Asset
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
 
-Write-Step 'Comprobando ZeroTier'
-$zeroTierCli = $null
-try { $zeroTierCli = Get-ZeroTierCli } catch { }
-if (-not $zeroTierCli) {
-    $zeroTierMsi = Get-Installer 'ZeroTier-One.msi' @("$ReleaseBaseUrl/ZeroTier-One.msi", 'https://download.zerotier.com/dist/ZeroTier%20One.msi')
-    Install-Msi $zeroTierMsi
-    $state.ZeroTierInstalledByBootstrap = $true; Save-State
-    $zeroTierCli = Get-ZeroTierCli
-}
-Set-Service -Name 'ZeroTierOneService' -StartupType Automatic -ErrorAction SilentlyContinue
-$zeroTierService = Get-Service 'ZeroTierOneService' -ErrorAction Stop
-if ($zeroTierService.Status -ne 'Running') { Start-Service 'ZeroTierOneService' }
-if (Test-ZeroTierNetwork $zeroTierCli $NetworkId) {
-    Write-Host "Este equipo ya pertenece a la red $NetworkId." -ForegroundColor DarkGray
-} else {
-    Invoke-ZeroTierCli -Cli $zeroTierCli -Arguments @('join', $NetworkId)
-    if ($LASTEXITCODE -ne 0) { throw "ZeroTier no pudo unirse a la red $NetworkId." }
-    $state.ZeroTierJoinedByBootstrap = $true; Save-State
+    if (Test-Path -LiteralPath $path) {
+        $cachedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+        if ($cachedHash -eq $package.Sha256) { return $path }
+        Write-Warning "El MSI en cache no coincide con su SHA-256; se descargara de nuevo."
+        Remove-Item -LiteralPath $path -Force
+    }
+
+    Write-Host "Descargando respaldo desde GitHub Release: $($package.Asset)" -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseBaseUrl/$($package.Asset)" -OutFile $path
+    } catch {
+        throw "No se pudo descargar $($package.Asset) desde GitHub. Revisa la red o descarga el asset manualmente desde $ReleaseBaseUrl."
+    }
+
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
+    if ($actualHash -ne $package.Sha256) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        throw "El SHA-256 de $($package.Asset) no coincide; se cancela la instalacion."
+    }
+    return $path
 }
 
-Write-Step 'Restringiendo SSH a la IP administrada de ZeroTier'
-$zeroTierAdapter = Get-ZeroTierAdapter
-$zeroTierIp = Get-ZeroTierManagedIPv4 $zeroTierAdapter
-if (-not $state.Contains('DefaultOpenSshRuleWasEnabled')) {
-    $defaultRule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    $state['DefaultOpenSshRuleWasEnabled'] = [bool]($defaultRule.Enabled -contains 'True')
-    Save-State
-}
-Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-Get-NetFirewallRule -DisplayName 'Remote Support SSH via ZeroTier' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-# Algunos adaptadores virtuales (incluido ZeroTier en Windows) no son aceptados
-# por -InterfaceAlias de Windows Firewall. Limitar la direccion local a la IP
-# administrada evita publicar SSH por las IP de LAN/Internet.
-New-NetFirewallRule -DisplayName 'Remote Support SSH via ZeroTier' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 22 -LocalAddress $zeroTierIp -Profile Any | Out-Null
-Write-Host "SSH permitido solo para la IP ZeroTier local: $zeroTierIp" -ForegroundColor DarkGray
-
-if (-not $SkipCloudflared) {
-    Write-Step 'Comprobando cloudflared para el respaldo temporal'
-    $cloudflared = Get-CloudflaredExe
-    if (-not $cloudflared) {
-        $cloudflaredMsi = Get-Installer 'cloudflared-windows-amd64.msi' @("$ReleaseBaseUrl/cloudflared-windows-amd64.msi", 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi')
-        Install-Msi $cloudflaredMsi
-        if (-not (Get-CloudflaredExe)) { throw 'cloudflared no se encontro despues de instalarlo.' }
-        $state.CloudflaredInstalledByBootstrap = $true; Save-State
+function Install-FromRelease([string] $Id) {
+    $path = Get-ReleaseInstaller $Id
+    Write-Step "Instalando $Id desde el Release"
+    $process = Start-Process msiexec.exe -ArgumentList @('/i', "`"$path`"", '/qn', '/norestart') -Wait -PassThru
+    if ($process.ExitCode -notin 0, 3010) {
+        throw "La instalacion de respaldo de $Id fallo con codigo $($process.ExitCode)."
     }
 }
 
-if (-not $SkipVnc) {
-    Write-Step 'Comprobando TightVNC 4'
-    if (Test-TightVncInstalled) {
-        Write-Host 'TightVNC ya esta instalado; no se abrira el instalador otra vez.' -ForegroundColor DarkGray
+function Install-Package([string] $Id) {
+    if (Test-WingetPackage $Id) {
+        Write-Host "$Id ya esta instalado." -ForegroundColor DarkGray
+        return
+    }
+
+    if (-not $ForceRelease -and (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+        $package = $Packages[$Id]
+        Write-Host "Instalando $Id $($package.Version) con winget..." -ForegroundColor DarkGray
+        & winget.exe install --id $Id --exact --version $package.Version --scope machine `
+            --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+        if ($LASTEXITCODE -eq 0 -and (Test-WingetPackage $Id)) { return }
+        Write-Warning "winget no pudo instalar $Id; se usara el Release de respaldo."
+    } elseif ($ForceRelease) {
+        Write-Host "-ForceRelease activo: se omite winget para $Id." -ForegroundColor DarkGray
     } else {
-        $tightVncMsi = Get-Installer 'tightvnc-4.0.2-x64.msi' @("$ReleaseBaseUrl/tightvnc-4.0.2-x64.msi", 'https://www.tightvnc.com/download/4.0.2/tightvnc-4.0.2-x64.msi')
-        Write-Host 'El instalador es interactivo para que la contrasena no se guarde en ningun script.' -ForegroundColor Yellow
-        Install-Msi $tightVncMsi -Interactive
-        if (Test-TightVncInstalled) { $state.TightVncInstalledByBootstrap = $true; Save-State }
+        Write-Warning 'winget no esta disponible; se usara el Release de respaldo.'
+    }
+
+    Install-FromRelease $Id
+    if (-not (Test-WingetPackage $Id)) {
+        Write-Warning "$Id se instalo desde el Release, pero winget no lo detecta todavia. Continua si la aplicacion aparece en el sistema."
     }
 }
 
-Write-Step 'Copiando el iniciador de Cloudflare'
-# Con `irm ... | iex` no hay archivo en disco y $PSScriptRoot esta vacio.
-$scriptSource = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts\Start-CloudflareSupport.ps1' } else { $null }
-$scriptTarget = Join-Path $InstallRoot 'Start-CloudflareSupport.ps1'
-if ($scriptSource -and (Test-Path $scriptSource)) { Copy-Item -Force $scriptSource $scriptTarget } else { Invoke-WebRequest -Uri "$RepoBase/scripts/Start-CloudflareSupport.ps1" -OutFile $scriptTarget -UseBasicParsing }
-$uninstallSource = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'Uninstall-RemoteSupport.ps1' } else { $null }
-$uninstallTarget = Join-Path $InstallRoot 'Uninstall-RemoteSupport.ps1'
-if ($uninstallSource -and (Test-Path $uninstallSource)) { Copy-Item -Force $uninstallSource $uninstallTarget } else { Invoke-WebRequest -Uri "$RepoBase/Uninstall-RemoteSupport.ps1" -OutFile $uninstallTarget -UseBasicParsing }
+function Get-ZeroTierCommand {
+    $candidates = @(
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x64.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-one_x86.exe'),
+        (Join-Path $CommonAppData 'ZeroTier\One\zerotier-cli.bat')
+    )
+    $command = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $command) {
+        throw 'ZeroTier se instalo, pero no se encontro su comando. Reinicia el equipo y vuelve a ejecutar este script.'
+    }
+    return $command
+}
 
-Write-Host "`nINSTALACION BASE COMPLETA" -ForegroundColor Green
-Write-Host "1. Autoriza este equipo en ZeroTier Central (Network ID: $NetworkId)."
-Write-Host '2. En TightVNC configura una contrasena fuerte y no abras TCP/5900 en el firewall.'
-Write-Host '3. Para respaldo temporal ejecuta:'
-Write-Host "   powershell -ExecutionPolicy Bypass -File `"$scriptTarget`""
-Write-Host '4. Para revertir solo los cambios de este bootstrap ejecuta:'
-Write-Host "   powershell -ExecutionPolicy Bypass -File `"$uninstallTarget`""
-Write-Host "`nCache de instaladores: $InstallerCache" -ForegroundColor Cyan
-Write-Host 'Puedes copiar esa carpeta a una USB y reutilizarla con -InstallerSource X:\carpeta.' -ForegroundColor Cyan
-Write-Host "`nEstado de ZeroTier:" -ForegroundColor Cyan
-Invoke-ZeroTierCli -Cli $zeroTierCli -Arguments @('listnetworks')
-Write-Host "`nEstado de SSH:" -ForegroundColor Cyan
-Get-Service sshd | Format-Table -AutoSize
+function Invoke-ZeroTier([string] $Command, [string[]] $Arguments) {
+    if ((Split-Path -Leaf $Command) -match '^zerotier-one_') {
+        & $Command -q @Arguments
+    } else {
+        & $Command @Arguments
+    }
+}
+
+function Wait-ZeroTierService {
+    for ($attempt = 1; $attempt -le 15; $attempt++) {
+        $service = Get-Service -Name ZeroTierOneService -ErrorAction SilentlyContinue
+        if ($service -and $service.Status -eq 'Running') { return }
+        Start-Sleep -Seconds 1
+    }
+    throw 'El servicio de ZeroTier no esta en ejecucion. Revisa services.msc y vuelve a intentarlo.'
+}
+
+function Enable-OpenSshServer {
+    $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
+    if ($capability.State -ne 'Installed') {
+        Write-Host 'Agregando la capacidad OpenSSH.Server...' -ForegroundColor DarkGray
+        Add-WindowsCapability -Online -Name $capability.Name | Out-Null
+    }
+    if (-not (Get-Service -Name sshd -ErrorAction SilentlyContinue)) {
+        throw 'OpenSSH Server no quedo instalado. Instala la capacidad OpenSSH.Server y vuelve a ejecutar este script.'
+    }
+    Set-Service -Name sshd -StartupType Automatic
+    if ((Get-Service -Name sshd).Status -ne 'Running') {
+        Start-Service -Name sshd
+    }
+}
+
+function Copy-CloudflareStarter {
+    New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
+    $target = Join-Path $InstallRoot 'Start-CloudflareSupport.ps1'
+    $localCopy = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts\Start-CloudflareSupport.ps1' } else { $null }
+
+    if ($localCopy -and (Test-Path -LiteralPath $localCopy)) {
+        Copy-Item -LiteralPath $localCopy -Destination $target -Force
+    } else {
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/scripts/Start-CloudflareSupport.ps1' -OutFile $target
+    }
+    return $target
+}
+
+if (-not $Flow) {
+    Write-Host 'Elige una ruta de soporte:' -ForegroundColor Cyan
+    Write-Host '  1. ZeroTier + TightVNC directo (recomendado)'
+    Write-Host '  2. Cloudflare + SSH + TightVNC (respaldo temporal)'
+    do {
+        $choice = Read-Host 'Escribe 1 o 2'
+    } until ($choice -in '1', '2')
+    $Flow = if ($choice -eq '1') { 'ZeroTier' } else { 'Cloudflare' }
+}
+
+Write-Step 'Instalando TightVNC (comun a ambas rutas)'
+Install-Package 'GlavSoft.TightVNC'
+
+if ($Flow -eq 'ZeroTier') {
+    Write-Step 'Instalando ZeroTier'
+    Install-Package 'ZeroTier.ZeroTierOne'
+    Wait-ZeroTierService
+
+    $zeroTier = Get-ZeroTierCommand
+
+    # En PS 5.1, redirigir stderr de un comando nativo con EAP=Stop puede
+    # lanzar NativeCommandError. ZeroTier usa stderr para avisos normales.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $networks = Invoke-ZeroTier $zeroTier @('listnetworks') 2>&1 | Out-String
+        if ($networks -notmatch [regex]::Escape($NetworkId)) {
+            Write-Host "Uniendo el equipo a la red ZeroTier $NetworkId..." -ForegroundColor DarkGray
+            Invoke-ZeroTier $zeroTier @('join', $NetworkId)
+            if ($LASTEXITCODE -ne 0) { throw "ZeroTier no pudo unirse a la red $NetworkId." }
+            Start-Sleep -Seconds 2
+            $networks = Invoke-ZeroTier $zeroTier @('listnetworks') 2>&1 | Out-String
+        }
+
+        $info = Invoke-ZeroTier $zeroTier @('info') 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    Write-Host "`nEstado de ZeroTier:" -ForegroundColor Cyan
+    Write-Host $info.Trim()
+    Write-Host $networks.Trim()
+
+    Write-Host "`nLISTO (ZeroTier + TightVNC)." -ForegroundColor Green
+    Write-Host '1. Autoriza este nodo en ZeroTier Central (usa el Node ID que aparece arriba).' -ForegroundColor Yellow
+    Write-Host '2. Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
+    Write-Host '3. Desde el otro equipo, conecta el visor VNC a: IP_ZEROTIER:5900' -ForegroundColor Yellow
+} else {
+    Write-Step 'Habilitando OpenSSH Server'
+    Enable-OpenSshServer
+
+    Write-Step 'Instalando cloudflared'
+    Install-Package 'Cloudflare.cloudflared'
+
+    $starter = Copy-CloudflareStarter
+    $windowsUser = $env:USERNAME
+
+    Write-Host "`nLISTO (Cloudflare + SSH + TightVNC)." -ForegroundColor Green
+    Write-Host '1. Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
+    Write-Host "2. En este equipo ejecuta:" -ForegroundColor Yellow
+    Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
+    Write-Host '3. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
+    Write-Host '4. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+    Write-Host "   ssh -N -L 5901:127.0.0.1:5900 -o 'ProxyCommand=cloudflared access ssh --hostname %h' $windowsUser@HOST.trycloudflare.com"
+    Write-Host '   vncviewer localhost:5901'
+    Write-Host 'La cuenta de Windows debe tener contrasena para que SSH acepte el inicio de sesion.' -ForegroundColor DarkGray
+}
