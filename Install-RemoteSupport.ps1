@@ -16,7 +16,6 @@ param(
     [switch] $SkipVnc,
     [switch] $SkipCloudflared,
     # Carpeta opcional (por ejemplo, una USB) que contiene las MSI indicadas abajo.
-    [ValidateScript({ Test-Path $_ -PathType Container })]
     [string] $InstallerSource,
     [switch] $RefreshInstallers,
     # Los assets del ultimo GitHub Release se prueban antes que el proveedor.
@@ -28,6 +27,9 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $CommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 if ([string]::IsNullOrWhiteSpace($CommonAppData)) { throw 'Windows no devolvio la carpeta ProgramData requerida para la instalacion.' }
+if ($InstallerSource -and -not (Test-Path -LiteralPath $InstallerSource -PathType Container)) {
+    throw "InstallerSource no es una carpeta existente: $InstallerSource"
+}
 $InstallRoot = Join-Path -Path $CommonAppData -ChildPath 'RemoteSupportBootstrap'
 $InstallerCache = Join-Path $InstallRoot 'installers'
 $StatePath = Join-Path $InstallRoot 'bootstrap-state.json'

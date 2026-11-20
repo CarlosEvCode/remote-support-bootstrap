@@ -41,13 +41,22 @@ usa exactamente estos nombres (el instalador usa `releases/latest/download`):
 
 ## Uso en Windows
 
-Abre PowerShell como administrador y descarga una copia revisable:
+Abre PowerShell como administrador y descarga una copia revisable. Este es el
+método recomendado: conserva el contexto de un archivo `.ps1` y evita
+`Invoke-Expression`.
 
 ```powershell
-$repo = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main'
-Invoke-WebRequest "$repo/Install-RemoteSupport.ps1" -OutFile "$env:TEMP\Install-RemoteSupport.ps1"
-notepad "$env:TEMP\Install-RemoteSupport.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\Install-RemoteSupport.ps1"
+$url = 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1'
+$file = Join-Path ([IO.Path]::GetTempPath()) 'Install-RemoteSupport.ps1'
+Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file
+notepad $file
+powershell -NoProfile -ExecutionPolicy Bypass -File $file
+```
+
+Si prefieres una sola línea, úsala igualmente sin `iex`:
+
+```powershell
+$f = Join-Path ([IO.Path]::GetTempPath()) 'Install-RemoteSupport.ps1'; iwr -UseBasicParsing 'https://raw.githubusercontent.com/CarlosEvCode/remote-support-bootstrap/main/Install-RemoteSupport.ps1' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f
 ```
 
 El Network ID predeterminado es `c1644bfd5484e1f8`. Autoriza el equipo nuevo en
