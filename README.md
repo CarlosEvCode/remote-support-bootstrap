@@ -41,7 +41,16 @@ Si winget está bloqueado pero GitHub no, fuerza los MSI del Release:
 powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier -ForceRelease
 ```
 
-Al terminar, abre **TightVNC Server – Control Center (System Service)** y define una contraseña. No hay contraseña en el script ni en el repositorio.
+El script deja **TightVNC Server** registrado como servicio, iniciado en `TCP/5900` y con una contraseña VNC configurada. Por defecto usa `1224` (VNC admite máximo 8 caracteres). Puedes cambiarla o desactivar la autenticación:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier -VncPassword 'MiClave1'
+powershell -ExecutionPolicy Bypass -File .\Install-RemoteSupport.ps1 -Flow ZeroTier -DisableVncAuth
+```
+
+`-DisableVncAuth` deja el escritorio sin contraseña; úsalo solo en una VM de prueba.
+
+En la ruta Cloudflare el script también activa `AllowLoopback`, necesario para que el reenvío SSH llegue a `127.0.0.1:5900`.
 
 ## Conectar por ZeroTier
 

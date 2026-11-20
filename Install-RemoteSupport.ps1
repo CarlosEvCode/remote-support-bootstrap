@@ -18,6 +18,12 @@ Omite el menu: ZeroTier o Cloudflare.
 .PARAMETER NetworkId
 Red de ZeroTier a la que se une el equipo.
 
+.PARAMETER VncPassword
+Contrasena de TightVNC (maximo 8 caracteres). Por defecto 1224.
+
+.PARAMETER DisableVncAuth
+Deja TightVNC sin autenticacion VNC. No recomendado fuera de una VM de prueba.
+
 .PARAMETER ForceRelease
 No intenta winget y usa directamente los MSI del Release.
 #>
@@ -28,6 +34,11 @@ param(
 
     [ValidatePattern('^[a-fA-F0-9]{16}$')]
     [string] $NetworkId = 'c1644bfd5484e1f8',
+
+    [ValidateLength(0, 8)]
+    [string] $VncPassword = '1224',
+
+    [switch] $DisableVncAuth,
 
     [switch] $ForceRelease
 )
@@ -116,7 +127,7 @@ function Install-FromRelease([string] $Id) {
     }
 }
 
-function Install-Package([string] $Id) {
+function Install-RemotePackage([string] $Id) {
     if (Test-WingetPackage $Id) {
         Write-Host "$Id ya esta instalado." -ForegroundColor DarkGray
         return
@@ -171,6 +182,117 @@ function Wait-ZeroTierService {
     throw 'El servicio de ZeroTier no esta en ejecucion. Revisa services.msc y vuelve a intentarlo.'
 }
 
+function Find-TightVncServer {
+    $candidates = @()
+    if ($env:ProgramFiles) { $candidates += Join-Path $env:ProgramFiles 'TightVNC\tvnserver.exe' }
+    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($programFilesX86) { $candidates += Join-Path $programFilesX86 'TightVNC\tvnserver.exe' }
+
+    $server = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $server) { throw 'No se encontro tvnserver.exe. TightVNC no quedo instalado correctamente.' }
+    return $server
+}
+
+function Get-VncPasswordHash([string] $Password) {
+    # VNC cifra la contrasena con DES/ECB y una clave fija cuyos bits estan
+    # invertidos respecto a la representacion estandar de DES.
+    $plain = New-Object byte[] 8
+    $bytes = [Text.Encoding]::ASCII.GetBytes($Password)
+    [Array]::Copy($bytes, $plain, [Math]::Min(8, $bytes.Length))
+
+    $fixedKey = [byte[]](23, 82, 107, 6, 35, 78, 88, 7)
+    $key = New-Object byte[] 8
+    for ($index = 0; $index -lt 8; $index++) {
+        $value = 0
+        for ($bit = 0; $bit -lt 8; $bit++) {
+            $value = ($value -shl 1) -bor (($fixedKey[$index] -shr $bit) -band 1)
+        }
+        $key[$index] = [byte] $value
+    }
+
+    $des = [Security.Cryptography.DES]::Create()
+    try {
+        $des.Mode = [Security.Cryptography.CipherMode]::ECB
+        $des.Padding = [Security.Cryptography.PaddingMode]::None
+        $des.Key = $key
+        $encrypted = $des.CreateEncryptor().TransformFinalBlock($plain, 0, 8)
+        return ,$encrypted
+    } finally {
+        $des.Dispose()
+    }
+}
+
+function Initialize-TightVnc([string] $ServerPath, [string] $Password, [switch] $AllowLoopback, [switch] $DisableAuth) {
+    $service = Get-Service -Name tvnserver -ErrorAction SilentlyContinue
+    if (-not $service) {
+        Write-Host 'Registrando TightVNC Server como servicio...' -ForegroundColor DarkGray
+        & $ServerPath -install -silent
+        for ($attempt = 1; $attempt -le 10; $attempt++) {
+            Start-Sleep -Seconds 1
+            $service = Get-Service -Name tvnserver -ErrorAction SilentlyContinue
+            if ($service) { break }
+        }
+        if (-not $service) { throw 'TightVNC no se pudo registrar como servicio.' }
+    }
+
+    # Al detenerse, el servicio guarda su configuracion en el registro. Primero
+    # lo detenemos y despues escribimos, para que nuestros valores prevalezcan.
+    if ((Get-Service -Name tvnserver).Status -ne 'Stopped') {
+        Write-Host 'Deteniendo TightVNC para aplicar la configuracion...' -ForegroundColor DarkGray
+        Stop-Service -Name tvnserver -Force
+        for ($attempt = 1; $attempt -le 20; $attempt++) {
+            if ((Get-Service -Name tvnserver).Status -eq 'Stopped') { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ((Get-Service -Name tvnserver).Status -ne 'Stopped') {
+            throw 'No se pudo detener el servicio tvnserver para configurarlo.'
+        }
+    }
+
+    $regCandidates = if ($ServerPath -match 'Program Files \(x86\)') {
+        @('HKLM:\SOFTWARE\WOW6432Node\TightVNC\Server', 'HKLM:\SOFTWARE\TightVNC\Server')
+    } else {
+        @('HKLM:\SOFTWARE\TightVNC\Server', 'HKLM:\SOFTWARE\WOW6432Node\TightVNC\Server')
+    }
+    $regPath = $regCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $regPath) {
+        $regPath = $regCandidates[0]
+        New-Item -Path $regPath -Force | Out-Null
+    }
+
+    New-ItemProperty -Path $regPath -Name 'AcceptRfbConnections' -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -Path $regPath -Name 'RfbPort' -PropertyType DWord -Value 5900 -Force | Out-Null
+    if ($AllowLoopback) {
+        New-ItemProperty -Path $regPath -Name 'AllowLoopback' -PropertyType DWord -Value 1 -Force | Out-Null
+    }
+
+    if ($DisableAuth) {
+        New-ItemProperty -Path $regPath -Name 'UseVncAuthentication' -PropertyType DWord -Value 0 -Force | Out-Null
+        Write-Warning 'La autenticacion VNC queda desactivada. Usalo solo en una VM de prueba.'
+    } else {
+        if ([string]::IsNullOrEmpty($Password)) {
+            throw 'VncPassword esta vacio. Usa una contrasena o -DisableVncAuth de forma explicita.'
+        }
+        [byte[]] $passwordHash = Get-VncPasswordHash $Password
+        New-ItemProperty -Path $regPath -Name 'UseVncAuthentication' -PropertyType DWord -Value 1 -Force | Out-Null
+        New-ItemProperty -Path $regPath -Name 'Password' -PropertyType Binary -Value $passwordHash -Force | Out-Null
+    }
+
+    Set-Service -Name tvnserver -StartupType Automatic
+    Start-Service -Name tvnserver
+
+    $listening = $false
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        if (Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) {
+            $listening = $true
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $listening) { Write-Warning 'TightVNC esta iniciado, pero TCP/5900 todavia no aparece escuchando.' }
+    return $listening
+}
+
 function Enable-OpenSshServer {
     $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0'
     if ($capability.State -ne 'Installed') {
@@ -210,11 +332,24 @@ if (-not $Flow) {
 }
 
 Write-Step 'Instalando TightVNC (comun a ambas rutas)'
-Install-Package 'GlavSoft.TightVNC'
+Install-RemotePackage 'GlavSoft.TightVNC'
+
+Write-Step 'Configurando TightVNC'
+$tvnserver = Find-TightVncServer
+$vncReady = Initialize-TightVnc -ServerPath $tvnserver -Password $VncPassword `
+    -AllowLoopback:($Flow -eq 'Cloudflare') -DisableAuth:$DisableVncAuth
+
+$vncAuthStatus = if ($DisableVncAuth) {
+    'Autenticacion VNC: DESACTIVADA'
+} else {
+    "Contrasena VNC: $VncPassword"
+}
+$vncPortStatus = if ($vncReady) { 'TCP/5900 activo' } else { 'TCP/5900 aun no confirmado' }
+$vncStatus = "$vncAuthStatus. $vncPortStatus"
 
 if ($Flow -eq 'ZeroTier') {
     Write-Step 'Instalando ZeroTier'
-    Install-Package 'ZeroTier.ZeroTierOne'
+    Install-RemotePackage 'ZeroTier.ZeroTierOne'
     Wait-ZeroTierService
 
     $zeroTier = Get-ZeroTierCommand
@@ -249,6 +384,7 @@ if ($Flow -eq 'ZeroTier') {
     if ($networkLine -and $networkLine -match '([0-9]{1,3}(?:\.[0-9]{1,3}){3})/\d+') { $managedIp = $Matches[1] }
 
     Write-Host "`nLISTO (ZeroTier + TightVNC)." -ForegroundColor Green
+    Write-Host "TightVNC queda iniciado. $vncStatus" -ForegroundColor Cyan
     if ($nodeId) { Write-Host "Node ID: $nodeId" -ForegroundColor Cyan }
     if ($managedIp) {
         Write-Host "IP ZeroTier: $managedIp" -ForegroundColor Cyan
@@ -257,23 +393,22 @@ if ($Flow -eq 'ZeroTier') {
         Write-Host '1. Autoriza este nodo en ZeroTier Central (usa el Node ID de arriba).' -ForegroundColor Yellow
         Write-Host '2. Cuando este autorizado aparecera la IP administrada; conecta el visor VNC a esa IP, puerto 5900.' -ForegroundColor Yellow
     }
-    Write-Host 'Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
 } else {
     Write-Step 'Habilitando OpenSSH Server'
     Enable-OpenSshServer
 
     Write-Step 'Instalando cloudflared'
-    Install-Package 'Cloudflare.cloudflared'
+    Install-RemotePackage 'Cloudflare.cloudflared'
 
     $starter = Copy-CloudflareStarter
     $windowsUser = $env:USERNAME
 
     Write-Host "`nLISTO (Cloudflare + SSH + TightVNC)." -ForegroundColor Green
-    Write-Host '1. Abre TightVNC Server - Control Center (System Service) y define una contrasena.' -ForegroundColor Yellow
-    Write-Host "2. En este equipo ejecuta:" -ForegroundColor Yellow
+    Write-Host "TightVNC queda iniciado. $vncStatus" -ForegroundColor Cyan
+    Write-Host "1. En este equipo ejecuta:" -ForegroundColor Yellow
     Write-Host "   powershell -ExecutionPolicy Bypass -File `"$starter`""
-    Write-Host '3. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
-    Write-Host '4. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
+    Write-Host '2. Comparte SOLO el host *.trycloudflare.com que muestre el tunel.' -ForegroundColor Yellow
+    Write-Host '3. En Linux, el tecnico ejecuta:' -ForegroundColor Yellow
     Write-Host "   ssh -N -L 5901:127.0.0.1:5900 -o 'ProxyCommand=cloudflared access ssh --hostname %h' $windowsUser@HOST.trycloudflare.com"
     Write-Host '   vncviewer localhost:5901'
     Write-Host 'La cuenta de Windows debe tener contrasena para que SSH acepte el inicio de sesion.' -ForegroundColor DarkGray
